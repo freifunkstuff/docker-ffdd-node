@@ -1,0 +1,2 @@
+#!/bin/sh
+exec python3 -u /usr/local/bin/wireguard_status.py --interval "${WIREGUARD_STATUS_INTERVAL:-10}" --stale-after "${WIREGUARD_STATUS_STALE_AFTER:-180}"

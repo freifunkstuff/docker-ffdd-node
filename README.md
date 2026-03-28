@@ -4,6 +4,7 @@ Dieser Ordner enthält einen containerisierten Freifunk-Servernode mit:
 
 - `registrar` (Registrierung, Node-ID, fastd/bmxd Runtime-Dateien)
 - `sysinfo` (30s-Refresh von `sysinfo.json` + `nodes.json`)
+- `wireguard` (Status-Logging für WireGuard-Peers)
 - `fastd` + `bmxd`
 - `nginx` (Port 80, UI + JSON-Endpunkte)
 
@@ -13,6 +14,7 @@ Dieser Ordner enthält einen containerisierten Freifunk-Servernode mit:
 
 - Docker + Docker Compose Plugin
 - Linux-Host mit `/dev/net/tun`
+- Der Container muss `net.ipv4.ip_forward=1` aktivieren können
 
 ## 1) Konfiguration anlegen
 
@@ -31,7 +33,7 @@ Mindestens diese Werte in `.env` setzen:
 
 Optional:
 
-- `FASTD_PEERS` leer lassen → Defaults aus `config/defaults.yaml`
+- `BACKBONE_PEERS` leer lassen → Defaults aus `config/defaults.yaml`
 - `NODE_REGISTRATION_URL` leer lassen → Defaults aus `config/defaults.yaml`
 - `REGISTRAR_INTERVAL` muss zwischen `3600` und `21600` Sekunden liegen (1–6h)
 
@@ -91,6 +93,7 @@ Im Container laufen getrennte Dienste:
 
 - `registrar`
 - `sysinfo`
+- `wireguard`
 - `fastd`
 - `bmxd`
 - `nginx`
@@ -98,7 +101,7 @@ Im Container laufen getrennte Dienste:
 Status prüfen:
 
 ```bash
-docker compose exec -T dockernode sh -lc 'sv status registrar; sv status sysinfo; sv status fastd; sv status bmxd; sv status nginx'
+docker compose exec -T dockernode sh -lc 'sv status registrar; sv status sysinfo; sv status wireguard; sv status fastd; sv status bmxd; sv status nginx'
 ```
 
 Einzelnen Dienst neu starten:
@@ -124,6 +127,7 @@ Darin werden u. a. gespeichert:
 - `registration.node_id`
 - `registration.register_key`
 - `fastd.secret`
+- `wireguard.secret`
 
 Flüchtige Laufzeitdaten liegen im Container unter:
 

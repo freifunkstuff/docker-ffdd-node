@@ -36,9 +36,9 @@ class NodeConfigTests(unittest.TestCase):
     def test_resolve_config_uses_blank_env_as_default_when_enabled(self) -> None:
         schema = (
             {
-                "env": "FASTD_PEERS",
-                "default_key": "FASTD_PEERS",
-                "path": ("fastd", "peers"),
+                "env": "BACKBONE_PEERS",
+                "default_key": "BACKBONE_PEERS",
+                "path": ("backbone", "peers"),
                 "type": "str",
                 "required": True,
                 "allow_blank": False,
@@ -48,12 +48,17 @@ class NodeConfigTests(unittest.TestCase):
 
         result = node_config.resolve_config(
             schema=schema,
-            defaults={"FASTD_PEERS": "vpn1.example.org:5002;deadbeef"},
-            env={"FASTD_PEERS": ""},
+            defaults={
+                "BACKBONE_PEERS": "fastd;vpn1.example.org:5002;0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            },
+            env={"BACKBONE_PEERS": ""},
             base_values={},
         )
 
-        self.assertEqual(result.values["fastd"]["peers"], "vpn1.example.org:5002;deadbeef")
+        self.assertEqual(
+            result.values["backbone"]["peers"],
+            "fastd;vpn1.example.org:5002;0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
         self.assertEqual(result.errors, [])
 
     def test_require_valid_config_logs_warning_and_error(self) -> None:

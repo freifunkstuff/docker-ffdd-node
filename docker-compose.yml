@@ -1,10 +1,10 @@
 services:
   dockernode:
-    container_name: ${DOCKERNODE_CONTAINER_NAME:-ffdd-node}
+    container_name: ffdd-node
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${DOCKERNODE_IMAGE:-ffdd-node}
+    image: ffdd-node
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
@@ -15,7 +15,7 @@ services:
       - "${FASTD_PORT:-5002}:${FASTD_PORT:-5002}/udp"
     volumes:
       - ./data:/data
-    mem_limit: ${DOCKERNODE_MEM_LIMIT:-200m}
+    mem_limit: 200m
     stop_grace_period: 15s
     environment:
       NODE_CONTACT_EMAIL: ${NODE_CONTACT_EMAIL:-}
@@ -28,8 +28,8 @@ services:
       NODE_GPS_LONGITUDE: ${NODE_GPS_LONGITUDE:-}
       NODE_GPS_ALTITUDE: ${NODE_GPS_ALTITUDE:-0}
       FASTD_PORT: ${FASTD_PORT:-5002}
+      WIREGUARD_PORT: ${WIREGUARD_PORT:-}
       REGISTRAR_INTERVAL: ${REGISTRAR_INTERVAL:-3600}
-      FASTD_PEERS: ${FASTD_PEERS:-}
+      BACKBONE_PEERS: ${BACKBONE_PEERS:-}
       NODE_REGISTRATION_URL: ${NODE_REGISTRATION_URL:-}
       BMXD_PREFERRED_GATEWAY: ${BMXD_PREFERRED_GATEWAY:-}
-      FAILFAST_CHECKS: ${FAILFAST_CHECKS:-}

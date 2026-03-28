@@ -8,7 +8,7 @@ import re
 import subprocess
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from node_config import (
@@ -125,7 +125,7 @@ SYSINFO_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
 
 
 def log_info(message: str) -> None:
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S %z")
+    timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
     print(f"{timestamp} [sysinfo] {message}", flush=True)
 
 

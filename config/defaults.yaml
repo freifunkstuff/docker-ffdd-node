@@ -1,9 +1,9 @@
-FASTD_PEERS: >
-  vpn1.freifunk-dresden.de:5002;ac7e0412e359865e607bc2c0fe4606b4a9613a02ed2de5167227edf62a540dcc
-  vpn4.freifunk-dresden.de:5002;3b26d9a9e88c8c9ebe62d13869f49828d5ac82526f9ca3ed72aa767d476a7cc0
-  vpn8.freifunk-dresden.de:5002;8dbee62bc1b1068811db3ca637169995611d46668bb75bc87987d89f4ac02bdd
-  vpn1le.freifunk-leipzig.de:5002;955d44f6a9740e78f07e65574a22b1036e536dd36b5a92305f83b1ced1f697d0
-  vpn2le.freifunk-leipzig.de:5002;a9cfcc9909cb40354e0e1aff204b78260c37304b46bec77d11ef177acf5dc188
+BACKBONE_PEERS: >
+  fastd;vpn1.freifunk-dresden.de:5002;ac7e0412e359865e607bc2c0fe4606b4a9613a02ed2de5167227edf62a540dcc
+  fastd;vpn4.freifunk-dresden.de:5002;3b26d9a9e88c8c9ebe62d13869f49828d5ac82526f9ca3ed72aa767d476a7cc0
+  fastd;vpn8.freifunk-dresden.de:5002;8dbee62bc1b1068811db3ca637169995611d46668bb75bc87987d89f4ac02bdd
+  fastd;vpn1le.freifunk-leipzig.de:5002;955d44f6a9740e78f07e65574a22b1036e536dd36b5a92305f83b1ced1f697d0
+  fastd;vpn2le.freifunk-leipzig.de:5002;a9cfcc9909cb40354e0e1aff204b78260c37304b46bec77d11ef177acf5dc188
 
 NODE_REGISTRATION_URL: https://selfsigned.register.freifunk-dresden.de/bot.php?registerkey=__NODE_REGISTER_KEY__&node=__NODE_ID__
 

@@ -79,7 +79,8 @@ RUN apk add --no-cache \
     python3 \
     runit \
     tcpdump \
-    tzdata
+    tzdata \
+    wireguard-tools-wg
 
 RUN ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime \
  && echo "$TZ" > /etc/timezone
@@ -87,7 +88,7 @@ RUN ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime \
 COPY --from=builder /usr/local /usr/local
 COPY --from=builder /build/firmware/feeds/pool/bmxd/sources/bmxd /usr/bin/bmxd
 
-RUN mkdir -p /data /run/freifunk/fastd/peers /run/freifunk/bmxd /run/freifunk/sysinfo /run/freifunk/www /usr/local/share/freifunk /usr/lib/bmxd /etc/service
+RUN mkdir -p /data /run/freifunk/fastd/peers /run/freifunk/wireguard /run/freifunk/bmxd /run/freifunk/sysinfo /run/freifunk/www /usr/local/share/freifunk /usr/lib/bmxd /etc/service
 
 COPY config/defaults.yaml /usr/local/share/freifunk/defaults.yaml
 COPY config/nginx.conf /etc/nginx/nginx.conf
@@ -96,7 +97,7 @@ COPY --from=builder /build/firmware/files/common/usr/lib/license/agreement-de.tx
 COPY --from=builder /build/firmware/files/common/usr/lib/license/pico-de.txt /usr/local/share/freifunk/pico-de.txt
 COPY --from=builder /build/firmware/license/gpl2-en.txt /usr/local/share/freifunk/gpl2.txt
 COPY --from=builder /build/firmware/license/gpl3-en.txt /usr/local/share/freifunk/gpl3.txt
-COPY scripts/node_config.py scripts/registrar.py scripts/sysinfo.py /usr/local/bin/
+COPY scripts/node_config.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /usr/local/bin/
 COPY scripts/fastd-backbone-cmd.sh /usr/lib/fastd/backbone-cmd.sh
 COPY scripts/bmxd-launcher.sh /usr/local/bin/bmxd-launcher.sh
 COPY scripts/bmxd-gateway.py /usr/lib/bmxd/bmxd-gateway.py
@@ -107,12 +108,14 @@ RUN chmod +x \
     /usr/local/bin/docker-entrypoint.sh \
     /usr/local/bin/registrar.py \
     /usr/local/bin/sysinfo.py \
+    /usr/local/bin/wireguard_status.py \
     /usr/lib/fastd/backbone-cmd.sh \
     /usr/local/bin/bmxd-launcher.sh \
     /usr/lib/bmxd/bmxd-gateway.py \
     /etc/service/registrar/run \
     /etc/service/sysinfo/run \
     /etc/service/fastd/run \
+    /etc/service/wireguard/run \
     /etc/service/bmxd/run \
     /etc/service/nginx/run
 
@@ -124,7 +127,7 @@ CMD []
 
 FROM runtime-base AS tests
 
-COPY scripts/node_config.py scripts/registrar.py scripts/sysinfo.py scripts/run_gateway_script.py scripts/bmxd-gateway.py /opt/freifunk-tests/scripts/
+COPY scripts/node_config.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py scripts/run_gateway_script.py scripts/bmxd-gateway.py /opt/freifunk-tests/scripts/
 COPY tests/ /opt/freifunk-tests/tests/
 RUN cd /opt/freifunk-tests \
  && python3 -m unittest discover -v -s tests -t . \

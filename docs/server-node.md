@@ -3,9 +3,7 @@
 ## TODO
 
 * Health-Check, wann failen wir (z.b. wenn registrar weg ist?)
-* Wireguard Backbone + prüfen, ob Routing zwischen Backbones benötigt wird
 * Hardening, Capabilities, User
-* CI
 * Anleitung zum extenden - wie baue ich auf der Basis eigene Server?
 
 ## Architekturüberblick
@@ -13,21 +11,24 @@
 Der Server-Node ist als einzelner Container mit klar getrennten Laufzeitrollen aufgebaut:
 
 - eine gemeinsame Python-Config-Schicht stellt generische Loader-, Merge- und Validierungs-Helfer bereit
-- `registrar` beschafft bzw. persistiert die eindeutige Node-ID, erzeugt Schlüsselmaterial und rendert die Laufzeitkonfiguration für `fastd` und `bmxd`
+- `registrar` beschafft bzw. persistiert die eindeutige Node-ID, erzeugt Schlüsselmaterial, validiert WireGuard-Peers gegen die API und rendert die Laufzeitkonfiguration für `fastd`, `wireguard` und `bmxd`
 - ein `sysinfo`-Dienst läuft zyklisch, rendert `sysinfo.json` in ein flüchtiges Laufzeitverzeichnis und veröffentlicht stabile Web-Pfade per Symlink
-- `fastd` stellt die Backbone-Anbindung über das externe Mesh-Interface bereit
-- `bmxd` läuft mit den Freifunk-Dresden-kompatiblen Parametern auf dem durch `fastd` bereitgestellten Interface
+- ein `wireguard`-Dienst beobachtet den WireGuard-Status, loggt konfigurierte Peers beim Start und meldet Statuswechsel als `connected`, `stale` oder `never-seen`
+- `fastd` und `wireguard` stellen Backbone-Anbindungen über getrennte Interfaces bereit
+- `bmxd` läuft mit den Freifunk-Dresden-kompatiblen Parametern auf allen vom Registrator vorbereiteten Backbone-Interfaces
 - `runit` überwacht diese Prozesse im Container und startet sie bei Bedarf neu
 - `nginx` liefert die vom Sysinfo-Dienst publizierten Dateien auf Port 80 aus
 
 ### Komponenten
 
-- [dockernode/scripts/docker-entrypoint.sh](dockernode/scripts/docker-entrypoint.sh) startet standardmäßig `runsvdir` und damit alle unter `runit` definierten Dienste.
+- [dockernode/scripts/docker-entrypoint.sh](dockernode/scripts/docker-entrypoint.sh) setzt beim Start `net.ipv4.ip_forward=1`, prüft den Wert hart und startet danach standardmäßig `runsvdir` mit allen unter `runit` definierten Diensten.
 - [dockernode/scripts/runit/registrar/run](dockernode/scripts/runit/registrar/run) startet den Registrator zyklisch mit `--loop`.
 - [dockernode/scripts/node_config.py](dockernode/scripts/node_config.py) enthält generische Helfer für Defaults, Env, Validierung und persistierten Laufzeit-State.
 - [dockernode/scripts/registrar.py](dockernode/scripts/registrar.py) bringt sein eigenes Registrar-Schema mit und nutzt die generischen Helpers für Registrierung, Persistenz und Runtime-Dateien.
 - [dockernode/scripts/sysinfo.py](dockernode/scripts/sysinfo.py) ist der Sysinfo-Renderer: eigenes Sysinfo-Schema, `--checkconfig`, zyklisches Rendering nach `/run/freifunk/sysinfo/sysinfo.json` und Publikation der Web-Pfade in `/run/freifunk/www`.
 - [dockernode/scripts/runit/sysinfo/run](dockernode/scripts/runit/sysinfo/run) startet den Sysinfo-Dienst zyklisch mit `--loop`.
+- [dockernode/scripts/wireguard_status.py](dockernode/scripts/wireguard_status.py) liest `wireguard.env`, pollt `wg show <interface> dump` und loggt Zustände für konfigurierte Peers.
+- [dockernode/scripts/runit/wireguard/run](dockernode/scripts/runit/wireguard/run) startet den WireGuard-Statusdienst zyklisch mit Polling-Intervall und Stale-Schwelle.
 - [dockernode/scripts/runit/fastd/run](dockernode/scripts/runit/fastd/run) startet `fastd`, sobald die vom Registrator erzeugte `fastd.conf` vorhanden ist.
 - [dockernode/scripts/runit/nginx/run](dockernode/scripts/runit/nginx/run) startet `nginx` mit `daemon off` und liefert `/run/freifunk/www` auf Port 80 aus.
 - [dockernode/config/nginx.conf](dockernode/config/nginx.conf) definiert die nginx-Auslieferung für JSON-Endpunkte (`/sysinfo.json`, `/sysinfo-json.cgi`, `/nodes.json`), die UI unter `/ui/` sowie statische Rechtstexte unter `/licenses/*`.
@@ -36,23 +37,26 @@ Der Server-Node ist als einzelner Container mit klar getrennten Laufzeitrollen a
 ### Startreihenfolge
 
 1. Der Container startet `runit`.
-2. `registrar`, `sysinfo`, `fastd`, `bmxd` und `nginx` werden als getrennte Services hochgefahren.
+2. `registrar`, `sysinfo`, `wireguard`, `fastd`, `bmxd` und `nginx` werden als getrennte Services hochgefahren.
 3. `registrar` erzeugt zunächst die benötigten Laufzeitdateien unter `/run/freifunk/...`.
 4. `sysinfo` rendert zyklisch die JSON-Ausgabe nach `/run/freifunk/sysinfo/sysinfo.json` und aktualisiert die Symlinks in `/run/freifunk/www`.
-5. `fastd` wartet auf seine Config und startet danach.
-6. `bmxd` wartet auf seine Env-Datei und zusätzlich auf das von `fastd` bereitgestellte Interface `tbb_fastd`.
-7. `nginx` startet sofort und liefert ab dem ersten Rendering-Zyklus von `sysinfo` gültige Antworten auf Port 80.
+5. `fastd` wartet auf seine Config und startet danach nur dann aktiv, wenn der Registrator tatsächlich Fastd-Peers gerendert hat.
+6. `wireguard` wartet auf die erste vom Registrator erzeugte `wireguard.env` und beginnt danach mit dem Status-Monitoring.
+7. `bmxd` wartet auf seine Env-Datei und zusätzlich auf alle in `BMXD_BACKBONE_INTERFACES` eingetragenen Backbone-Interfaces.
+8. `nginx` startet sofort und liefert ab dem ersten Rendering-Zyklus von `sysinfo` gültige Antworten auf Port 80.
 
 Wichtig dabei: Der Registrator startet `fastd` und `bmxd` nicht direkt per `exec`, sondern liefert die Konfiguration, auf die deren Startskripte warten.
 
 ### Laufzeit- und Änderungsmodell
 
 - Persistente Knotendaten liegen in `/data/node.yaml`.
-- Flüchtige Laufzeitdateien liegen unter `/run/freifunk/fastd`, `/run/freifunk/bmxd`, `/run/freifunk/sysinfo` und `/run/freifunk/www`.
+- Flüchtige Laufzeitdateien liegen unter `/run/freifunk/fastd`, `/run/freifunk/wireguard`, `/run/freifunk/bmxd`, `/run/freifunk/sysinfo` und `/run/freifunk/www`.
+- Der WireGuard-Dienst liest seine Konfiguration aus `/run/freifunk/wireguard/wireguard.env` und loggt Änderungen ausschließlich anhand der vom Registrator erzeugten Peer-Liste und `wg`-Live-Daten.
 - Der Registrator läuft zyklisch und prüft in jedem Durchlauf, ob sich registrierungsrelevante oder gerenderte Inhalte geändert haben.
 - Der Sysinfo-Dienst läuft ebenfalls zyklisch und schreibt immer den aktuellen JSON-Stand in das volatile Runtime-Verzeichnis.
 - Nur bei inhaltlichen Änderungen werden Runtime-Dateien neu geschrieben.
 - Im Loop-Modus löst der Registrator danach gezielt `sv restart` für `fastd` und/oder `bmxd` aus.
+- Backbone-Routing zwischen mehreren Fastd-/WireGuard-Links erfolgt nicht per Bridge, sondern über `bmxd`-gesteuerte Routen in der Policy-Routing-Tabelle.
 
 Damit ergibt sich folgende Semantik:
 
@@ -99,15 +103,16 @@ Damit bleiben Rendering und HTTP-Serving sauber getrennt: Sysinfo schreibt, Webs
 - `node_config.py` kennt absichtlich keine fachlichen Scopes mehr; die konkreten Schemas liegen direkt in den Diensten.
 - Die Validierung ist damit dienstspezifisch: `registrar` prüft nur Registrierungs-, `fastd`- und `bmxd`-relevante Werte; `sysinfo` prüft Metadaten wie Kontakt, Name und GPS.
 - Der Container führt vor dem Start von `runit` einen Fail-Fast-Check aus.
+- Vor den eigentlichen Dienst-Checks setzt der Entrypoint `net.ipv4.ip_forward=1`, prüft den Wert erneut und bricht hart ab, wenn IP-Forwarding nicht aktivierbar ist.
 - Standardmäßig werden dabei sowohl `registrar --checkconfig` als auch `sysinfo --checkconfig` ausgeführt.
-- Die Fail-Fast-Hooks werden generisch als Kommandoliste ausgeführt, damit sich weitere Dienste später ohne Sonderlogik einklinken können.
-- Leere Env-Werte für technische Default-Keys wie `FASTD_PEERS`, `NODE_REGISTRATION_URL` und `INITIAL_NODE_ID` fallen auf [dockernode/config/defaults.yaml](dockernode/config/defaults.yaml) zurück. Das ist wichtig, weil `docker compose` diese Variablen als leeren String in den Container injiziert.
+- Leere Env-Werte für technische Default-Keys wie `BACKBONE_PEERS`, `NODE_REGISTRATION_URL` und `INITIAL_NODE_ID` fallen auf [dockernode/config/defaults.yaml](dockernode/config/defaults.yaml) zurück. Das ist wichtig, weil `docker compose` diese Variablen als leeren String in den Container injiziert.
 
 Aktueller inhaltlicher Stand der Validierung:
 
-- im `registrar`-Scope sind `NODE_REGISTRATION_URL`, `FASTD_PEERS`, `INITIAL_NODE_ID`, `FASTD_PORT`, `REGISTRAR_INTERVAL` und `BMXD_PREFERRED_GATEWAY` relevant.
-- `NODE_REGISTRATION_URL` und `FASTD_PEERS` dürfen im Compose-Setup leer bleiben und werden dann aus [dockernode/config/defaults.yaml](dockernode/config/defaults.yaml) gezogen.
+- im `registrar`-Scope sind `NODE_REGISTRATION_URL`, `BACKBONE_PEERS`, `INITIAL_NODE_ID`, `FASTD_PORT`, `WIREGUARD_PORT`, `REGISTRAR_INTERVAL` und `BMXD_PREFERRED_GATEWAY` relevant.
+- `NODE_REGISTRATION_URL` und `BACKBONE_PEERS` dürfen im Compose-Setup leer bleiben und werden dann aus [dockernode/config/defaults.yaml](dockernode/config/defaults.yaml) gezogen.
 - `REGISTRAR_INTERVAL` wird semantisch auf 1 bis 6 Stunden geprüft.
+- alle WireGuard-Peers werden im Reconcile-Lauf gegen die API geprüft; nur API-konsistente Peers bleiben aktiv, unvollständige oder abweichende Peers werden verworfen.
 - im `sysinfo`-Schema bleiben `NODE_CONTACT_EMAIL`, `NODE_NAME`, `NODE_COMMUNITY` sowie GPS-Daten fachlich verankert.
 - fehlende GPS-Angaben erzeugen dort zunächst nur eine Warnung im Log, noch kein Fail.
 - `autoupdate` wird für den Dockernode immer als deaktiviert modelliert.
@@ -116,7 +121,7 @@ Aktueller inhaltlicher Stand der Validierung:
 ### Aktuelle Scope-Grenzen
 
 - Der Container ist derzeit ein reiner Server-/Backbone-Knoten ohne WLAN-AP-Funktion.
-- Das aktuelle Modell geht von genau einem extern angebundenen Mesh-Interface über `fastd` aus.
+- Das aktuelle Modell unterstützt mehrere Backbone-Interfaces gleichzeitig, gemischt aus `fastd` und `wireguard`.
 - `nginx` liefert auf Port 80 die JSON-Endpunkte `/sysinfo.json`, `/sysinfo-json.cgi` und `/nodes.json` sowie die UI unter `/ui/` und Rechtstexte unter `/licenses/*` aus; Verzeichnis-Listing ist deaktiviert.
 
 ## Anforderungen
@@ -168,7 +173,7 @@ Dieses Kapitel gruppiert die Anforderungen logisch und hält pro Gruppe den aktu
 7. **umgesetzt** – es ist keine Umleitungs- oder Manipulationslogik für Nutzdaten implementiert
 8. **umgesetzt** – es gibt keine QoS-, Traffic-Shaping-, Firewall- oder Port-Block-Regeln im Container-Setup
 9. **umgesetzt** – die Routenentscheidung für das Mesh wird durch `bmxd` getroffen; der Container ergänzt nur die für den Betrieb nötige Interface- und Policy-Rule-Vorbereitung
-10. **umgesetzt** – im aktuellen Modell gibt es nur ein extern angebundenes Mesh-Interface; `bmxd` übernimmt das Mesh-Routing, zusätzliches Transit-Forwarding zwischen mehreren Segmenten ist daher derzeit nicht erforderlich
+10. **umgesetzt** – der Node arbeitet als Router; `ip_forward` wird im Entrypoint aktiv gesetzt und geprüft, und Transit-Routing zwischen mehreren Backbone-Interfaces erfolgt über `bmxd`-gesteuerte Routen
 11. **umgesetzt** – Registrierung und eindeutige Node-ID sind implementiert
 12. **umgesetzt** – IP-Adressberechnung aus der Node-ID ist implementiert
 13. **umgesetzt** – `nginx` auf Port 80 liefert die Sysinfo-Endpunkte aus
@@ -192,11 +197,11 @@ Dieses Kapitel gruppiert die Anforderungen logisch und hält pro Gruppe den aktu
 
 - **Punkt 1:** Für das aktuelle Container-Modell ist WLAN bewusst nicht Teil des Scopes. Der Node ist als reiner Backbone-/Server-Knoten ohne Access-Point-Funktion gedacht.
 - **Punkt 2:** Der aktuelle `bmxd`-Start enthält keine HNA-Parameter. Der Container ergänzt auch außerhalb des `bmxd`-Starts keine HNA-Ankündigungen für private oder Internet-Netze.
-- **Punkt 6:** Der Datenpfad besteht im Container aus `fastd`, `bmxd` und dem notwendigen Interface-Setup. Es gibt keinen zusätzlichen Proxy-, NAT- oder Paket-Umschreibpfad, der Nutzdaten inhaltlich verändert.
+- **Punkt 6:** Der Datenpfad besteht im Container aus `fastd`, `wireguard`, `bmxd` und dem notwendigen Interface-Setup. Es gibt keinen zusätzlichen Proxy-, NAT- oder Paket-Umschreibpfad, der Nutzdaten inhaltlich verändert.
 - **Punkt 7:** Es gibt keine Logik zum Umleiten oder Verändern von Nutzdaten. Das `bmxd`-Event-Script protokolliert nur Zustände und greift nicht in den Datenverkehr ein.
 - **Punkt 8:** Im Container sind keine QoS-, Traffic-Shaping-, Firewall- oder Port-Sperrregeln konfiguriert. Das `docker-compose`-Setup veröffentlicht nur den `fastd`-UDP-Port und definiert keine selektiven Filtersätze.
 - **Punkt 9:** Die Routingentscheidung für das Mesh verbleibt bei `bmxd`. Der Launcher setzt nur die Primär-IP, die beteiligten Interfaces und eine Policy Rule für das Mesh-Präfix, damit das von `bmxd` aufgebaute Routing im Container nutzbar wird.
-- **Punkt 10:** Im aktuellen Modell ist nur `tbb_fastd` als extern angebundenes Mesh-Interface vorgesehen. `bmxd` übernimmt dafür das Mesh-Routing; ein zusätzliches Kernel-Forwarding zwischen mehreren echten Transit-Segmenten ist in diesem Ein-Interface-Modell derzeit nicht erforderlich. Falls später mehrere Mesh-, LAN- oder Transit-Interfaces unterstützt werden, muss IP-Forwarding erneut geprüft und gegebenenfalls aktiviert werden.
+- **Punkt 10:** Der Node arbeitet als Router. `ip_forward` wird beim Start explizit aktiviert und hart geprüft. Mehrere Backbone-Interfaces gleichzeitig sind möglich; Transit-Routing zwischen ihnen erfolgt über `bmxd`-Routen in der Policy-Tabelle, nicht über Bridging.
 - **Punkt 15:** `bmxd` wird aus den Freifunk-Dresden-Quellen gebaut und mit fest vorgegebenen Parametern gestartet.
 
 **Belege im Repository**
@@ -221,7 +226,7 @@ Dieses Kapitel gruppiert die Anforderungen logisch und hält pro Gruppe den aktu
 
 - **Punkt 11:** Der Registrator erzeugt bzw. persistiert `register_key` und `node_id` und holt eine eindeutige Knotennummer über die Registrierungs-URL.
 - **Punkt 12:** Die Adressberechnung ist zentral in `node_addresses()` hinterlegt und leitet die Mesh-Adressen direkt aus der Node-ID ab.
-- Änderungen an der zugewiesenen Node-ID werden in die Laufzeitkonfiguration für `fastd` und `bmxd` übernommen.
+- Änderungen an der zugewiesenen Node-ID werden in die Laufzeitkonfiguration für `fastd`, `wireguard` und `bmxd` übernommen.
 
 **Belege im Repository**
 

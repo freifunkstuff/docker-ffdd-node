@@ -1,21 +1,33 @@
 #!/bin/sh
 set -eu
 
+ensure_ip_forward() {
+    current_value="$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || printf '')"
+    if [ "$current_value" = "1" ]; then
+        return 0
+    fi
+
+    if ! sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1; then
+        printf '%s [entrypoint] failed to enable net.ipv4.ip_forward\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" >&2
+        exit 1
+    fi
+
+    current_value="$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || printf '')"
+    if [ "$current_value" != "1" ]; then
+        printf '%s [entrypoint] net.ipv4.ip_forward is not enabled after sysctl attempt\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" >&2
+        exit 1
+    fi
+}
+
 if [ "$#" -gt 0 ]; then
     exec "$@"
 fi
 
+ensure_ip_forward
+
 if [ "${SKIP_FAILFAST:-0}" != "1" ]; then
-    FAILFAST_CHECKS="${FAILFAST_CHECKS:-python3 /usr/local/bin/registrar.py --checkconfig
-python3 /usr/local/bin/sysinfo.py --checkconfig}"
-    old_ifs="$IFS"
-    IFS='
-'
-    for check in $FAILFAST_CHECKS; do
-        [ -n "$check" ] || continue
-        sh -c "$check"
-    done
-    IFS="$old_ifs"
+    python3 /usr/local/bin/registrar.py --checkconfig
+    python3 /usr/local/bin/sysinfo.py --checkconfig
 fi
 
 if [ "${REGISTRAR_ONLY:-0}" = "1" ]; then

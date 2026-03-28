@@ -23,6 +23,7 @@ wait_for_file "$BMXD_ENV_FILE"
 : "${BMXD_DAEMON_RUNTIME_DIR:?missing BMXD_DAEMON_RUNTIME_DIR}"
 : "${BMXD_PRIMARY_INTERFACE:?missing BMXD_PRIMARY_INTERFACE}"
 : "${BMXD_FASTD_INTERFACE:?missing BMXD_FASTD_INTERFACE}"
+: "${BMXD_BACKBONE_INTERFACES:?missing BMXD_BACKBONE_INTERFACES}"
 : "${BMXD_GATEWAY_SCRIPT:?missing BMXD_GATEWAY_SCRIPT}"
 : "${BMXD_POLICY_RULE_TO:?missing BMXD_POLICY_RULE_TO}"
 : "${BMXD_POLICY_RULE_PRIORITY:?missing BMXD_POLICY_RULE_PRIORITY}"
@@ -38,7 +39,9 @@ ip link set dev "$BMXD_PRIMARY_INTERFACE" up
 ip addr flush dev "$BMXD_PRIMARY_INTERFACE" >/dev/null 2>&1 || true
 ip addr add "$BMXD_PRIMARY_IP/32" dev "$BMXD_PRIMARY_INTERFACE"
 
-wait_for_interface "$BMXD_FASTD_INTERFACE"
+for backbone_if in $BMXD_BACKBONE_INTERFACES; do
+    wait_for_interface "$backbone_if"
+done
 
 while ip rule del pref "$BMXD_POLICY_RULE_PRIORITY" >/dev/null 2>&1; do
     :
@@ -68,8 +71,10 @@ if [ -n "${BMXD_PREFERRED_GATEWAY:-}" ]; then
     set -- "$@" -p "$BMXD_PREFERRED_GATEWAY"
 fi
 
-set -- "$@" \
-    --dev="$BMXD_PRIMARY_INTERFACE" /linklayer 0 \
-    --dev="$BMXD_FASTD_INTERFACE" /linklayer 1
+set -- "$@" --dev="$BMXD_PRIMARY_INTERFACE" /linklayer 0
+
+for backbone_if in $BMXD_BACKBONE_INTERFACES; do
+    set -- "$@" --dev="$backbone_if" /linklayer 1
+done
 
 exec bmxd "$@"
