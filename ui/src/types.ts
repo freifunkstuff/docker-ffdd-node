@@ -58,3 +58,16 @@ export type NodesPayload = {
     };
   };
 };
+
+export type BackbonePeer = {
+  type?: string;
+  host?: string;
+  port?: string;
+  interface?: string;
+  status?: string;
+};
+
+export type BackbonePayload = {
+  timestamp?: string;
+  peers?: BackbonePeer[];
+};

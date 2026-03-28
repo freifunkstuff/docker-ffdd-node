@@ -42,11 +42,10 @@ a:hover {
   padding: 0.9rem 1.2rem;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   gap: 1rem;
-  justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
 }
 
 .topbar-title h1 {
@@ -58,13 +57,27 @@ a:hover {
   margin: 0.2rem 0 0;
 }
 
+.topbar-community {
+  justify-self: center;
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.1;
+  text-align: center;
+  color: var(--text);
+}
+
+.topbar-community:hover {
+  text-decoration: none;
+}
+
 .topbar-meta {
   display: grid;
-  grid-template-columns: repeat(3, max-content);
+  grid-template-columns: repeat(2, max-content);
   column-gap: 1rem;
   row-gap: 0.2rem;
   align-items: center;
   font-size: 0.92rem;
+  justify-self: end;
 }
 
 .topbar-meta .data-age {
@@ -152,6 +165,60 @@ a:hover {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 1rem;
+}
+
+.status-layout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.panel-status {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.panel-contact {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.panel-backbones {
+  grid-column: 2;
+  grid-row: 2;
+}
+
+.panel-backbones table td:last-child {
+  width: 1%;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 8.5ch;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.status-pill.connected {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+
+.status-pill.stale {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fcd34d;
+}
+
+.status-pill.disconnected {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
 }
 
 .panel {
@@ -255,6 +322,15 @@ input[type="search"] {
 }
 
 @media (max-width: 900px) {
+  .topbar {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar-community,
+  .topbar-meta {
+    justify-self: start;
+  }
+
   .layout-body {
     grid-template-columns: 1fr;
   }
@@ -275,5 +351,20 @@ input[type="search"] {
 
   .topbar-meta .data-age {
     min-width: 0;
+  }
+
+  .status-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-status {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .panel-contact,
+  .panel-backbones {
+    grid-column: auto;
+    grid-row: auto;
   }
 }

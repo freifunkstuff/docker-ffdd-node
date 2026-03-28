@@ -166,6 +166,7 @@ class SysinfoTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "sysinfo.json"
             nodes_output_path = Path(temp_dir) / "nodes.json"
+            backbone_output_path = Path(temp_dir) / "backbone.json"
             webroot = Path(temp_dir) / "www"
             config = {
                 "system": {"node_type": "server", "autoupdate": 0},
@@ -193,23 +194,28 @@ class SysinfoTests(unittest.TestCase):
                     "info": [],
                 },
             }
+            backbone_payload = {"timestamp": "1", "peers": []}
 
-            with patch.object(sysinfo, "require_valid_sysinfo_config", return_value=config), patch.object(sysinfo, "load_state", return_value=state), patch.object(sysinfo, "_build_firmware_block", return_value={"version": "dockernode-test"}), patch.object(sysinfo, "_build_system_block", return_value={"node_type": "server", "autoupdate": 0}), patch.object(sysinfo, "_build_statistic_block", return_value={"gateway_usage": []}), patch.object(sysinfo, "build_nodes_payload", return_value=nodes_payload), patch.object(sysinfo, "_derive_fastd_pubkey", return_value=""):
-                sysinfo.render_once(output_path, webroot, nodes_output_path)
+            with patch.object(sysinfo, "require_valid_sysinfo_config", return_value=config), patch.object(sysinfo, "load_state", return_value=state), patch.object(sysinfo, "_build_firmware_block", return_value={"version": "dockernode-test"}), patch.object(sysinfo, "_build_system_block", return_value={"node_type": "server", "autoupdate": 0}), patch.object(sysinfo, "_build_statistic_block", return_value={"gateway_usage": []}), patch.object(sysinfo, "build_nodes_payload", return_value=nodes_payload), patch.object(sysinfo, "_derive_fastd_pubkey", return_value=""), patch.object(sysinfo, "build_backbone_payload", return_value=(backbone_payload, {})):
+                sysinfo.render_once(output_path, webroot, nodes_output_path, backbone_output_path)
 
             written = json.loads(output_path.read_text(encoding="utf-8"))
             written_nodes = json.loads(nodes_output_path.read_text(encoding="utf-8"))
+            written_backbone = json.loads(backbone_output_path.read_text(encoding="utf-8"))
             self.assertEqual(written["data"]["common"]["node"], "52001")
             self.assertEqual(written["data"]["contact"]["email"], "admin@example.org")
             self.assertIn("firmware", written["data"])
             self.assertIn("statistic", written["data"])
             self.assertNotIn("originators", written["data"]["bmxd"])
             self.assertIn("originators", written_nodes["bmxd"])
+            self.assertEqual(written_backbone, backbone_payload)
             self.assertTrue((webroot / "sysinfo.json").is_symlink())
             self.assertTrue((webroot / "sysinfo-json.cgi").is_symlink())
             self.assertTrue((webroot / "nodes.json").is_symlink())
+            self.assertTrue((webroot / "backbone.json").is_symlink())
             self.assertEqual((webroot / "sysinfo.json").resolve(), output_path)
             self.assertEqual((webroot / "nodes.json").resolve(), nodes_output_path)
+            self.assertEqual((webroot / "backbone.json").resolve(), backbone_output_path)
 
     def test_publish_web_links_replaces_existing_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -218,19 +224,24 @@ class SysinfoTests(unittest.TestCase):
             output_path.write_text("{}\n", encoding="utf-8")
             nodes_output_path = Path(temp_dir) / "runtime" / "nodes.json"
             nodes_output_path.write_text("{}\n", encoding="utf-8")
+            backbone_output_path = Path(temp_dir) / "runtime" / "backbone.json"
+            backbone_output_path.write_text("{}\n", encoding="utf-8")
             webroot = Path(temp_dir) / "www"
             webroot.mkdir()
             (webroot / "sysinfo.json").write_text("old\n", encoding="utf-8")
             (webroot / "sysinfo-json.cgi").write_text("old\n", encoding="utf-8")
             (webroot / "nodes.json").write_text("old\n", encoding="utf-8")
+            (webroot / "backbone.json").write_text("old\n", encoding="utf-8")
 
-            sysinfo.publish_web_links(output_path, nodes_output_path, webroot)
+            sysinfo.publish_web_links(output_path, nodes_output_path, backbone_output_path, webroot)
 
             self.assertTrue((webroot / "sysinfo.json").is_symlink())
             self.assertTrue((webroot / "sysinfo-json.cgi").is_symlink())
             self.assertTrue((webroot / "nodes.json").is_symlink())
+            self.assertTrue((webroot / "backbone.json").is_symlink())
             self.assertEqual((webroot / "sysinfo-json.cgi").resolve(), output_path)
             self.assertEqual((webroot / "nodes.json").resolve(), nodes_output_path)
+            self.assertEqual((webroot / "backbone.json").resolve(), backbone_output_path)
 
     def test_write_json_atomic_sets_world_readable_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

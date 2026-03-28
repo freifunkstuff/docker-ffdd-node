@@ -100,10 +100,10 @@ class WireguardStatusTests(unittest.TestCase):
 
         self.assertEqual(status, "stale")
 
-    def test_determine_status_marks_missing_peer_as_never_seen(self) -> None:
+    def test_determine_status_marks_missing_peer_as_disconnected(self) -> None:
         status = wireguard_status.determine_status(None, None, now=1000, stale_after=180)
 
-        self.assertEqual(status, "never-seen")
+        self.assertEqual(status, "disconnected")
 
     def test_wait_for_runtime_config_waits_until_env_exists(self) -> None:
         exists_values = iter([False, False, True])

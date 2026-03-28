@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import type { NodesPayload, NodeRow, SysinfoPayload } from './types';
+import type { BackbonePayload, BackbonePeer, NodesPayload, NodeRow, SysinfoPayload } from './types';
 
 type ViewKey = 'status' | 'nodes' | 'licenses';
 
@@ -110,6 +110,47 @@ function KeyValueTable({ rows }: { rows: Array<[string, unknown]> }) {
   );
 }
 
+function BackboneTable({ peers }: { peers: BackbonePeer[] }) {
+  return (
+    <section class="panel panel-backbones">
+      <div class="panel-head">
+        <h3>Backbones</h3>
+        <span class="muted">{peers.filter((peer) => peer.status === 'connected').length} / {peers.length}</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Typ</th>
+              <th>Hostname (Port)</th>
+              <th>Interface</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {peers.length === 0 ? (
+              <tr>
+                <td colSpan={4} class="muted">Keine Backbone-Peers konfiguriert</td>
+              </tr>
+            ) : (
+              peers.map((peer, index) => (
+                <tr key={`${peer.type || 'peer'}-${peer.host || 'host'}-${peer.port || 'port'}-${index}`}>
+                  <td>{safe(peer.type)}</td>
+                  <td>{safe(peer.host, '')}:{safe(peer.port, '')}</td>
+                  <td>{safe(peer.interface)}</td>
+                  <td>
+                    <span class={`status-pill ${safe(peer.status, '').toLowerCase()}`}>{safe(peer.status)}</span>
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
 function NodeTable({
   title,
   columns,
@@ -168,6 +209,7 @@ export function App() {
   const [view, setView] = useState<ViewKey>(currentViewFromHash());
   const [sysinfo, setSysinfo] = useState<SysinfoPayload | null>(null);
   const [nodes, setNodes] = useState<NodesPayload | null>(null);
+  const [backbone, setBackbone] = useState<BackbonePayload | null>(null);
   const [error, setError] = useState<string>('');
   const [nodeFilter, setNodeFilter] = useState<string>('');
   const [legalTexts, setLegalTexts] = useState<LegalTextState>({});
@@ -194,15 +236,17 @@ export function App() {
       const attemptAt = Math.floor(Date.now() / 1000);
       setLastRefreshAttempt(attemptAt);
       try {
-        const [sysinfoData, nodesData] = await Promise.all([
+        const [sysinfoData, nodesData, backboneData] = await Promise.all([
           loadJson<SysinfoPayload>('/sysinfo.json'),
           loadJson<NodesPayload>('/nodes.json'),
+          loadJson<BackbonePayload>('/backbone.json'),
         ]);
         if (canceled) {
           return;
         }
         setSysinfo(sysinfoData);
         setNodes(nodesData);
+        setBackbone(backboneData);
         setError('');
         setRetryAfter(0);
       } catch (err) {
@@ -257,12 +301,14 @@ export function App() {
       refreshInFlightRef.current = true;
 
       try {
-        const [sysinfoData, nodesData] = await Promise.all([
+        const [sysinfoData, nodesData, backboneData] = await Promise.all([
           loadJson<SysinfoPayload>('/sysinfo.json'),
           loadJson<NodesPayload>('/nodes.json'),
+          loadJson<BackbonePayload>('/backbone.json'),
         ]);
         setSysinfo(sysinfoData);
         setNodes(nodesData);
+        setBackbone(backboneData);
         setError('');
         setRetryAfter(0);
       } catch (err) {
@@ -311,13 +357,18 @@ export function App() {
   const statistic = sysinfo?.data?.statistic || {};
   const contact = sysinfo?.data?.contact || {};
   const bmxd = nodes?.bmxd || {};
+  const backbonePeers = backbone?.peers || [];
+  const connectedBackbones = backbonePeers.filter((peer) => peer.status === 'connected').length;
 
   const communityName = safe(common.community);
   const communityLink = common.domain ? `https://${common.domain}` : 'https://freifunk.net';
   const titleName = safe(contact.name, 'Freifunk Knoten');
   const titleNode = safe(common.node, '?');
   const titleCommunity = safe(common.community, '?');
-  const currentTimestamp = nodes?.timestamp || sysinfo?.timestamp;
+  const currentTimestamp = [sysinfo?.timestamp, nodes?.timestamp, backbone?.timestamp]
+    .map((value) => Number(value || 0))
+    .reduce((latest, value) => (value > latest ? value : latest), 0)
+    .toString();
 
   useEffect(() => {
     document.title = `${titleNode} ${titleName} - Freifunk ${titleCommunity}`;
@@ -330,8 +381,10 @@ export function App() {
           <h1>{titleName}</h1>
           <p class="muted">Knoten {safe(common.node)}</p>
         </div>
+        <a class="topbar-community" href={communityLink} target="_blank" rel="noreferrer">
+          Freifunk {communityName}
+        </a>
         <div class="topbar-meta">
-          <a href={communityLink} target="_blank" rel="noreferrer">Freifunk {communityName}</a>
           <span>IP: {safe(common.ip)}</span>
           <span>Uptime: {safe(system.uptime_string || system.uptime)}</span>
           <span class={`data-age ${ageClass(currentTimestamp, nowSeconds)}`}>{formatAge(currentTimestamp, nowSeconds)}</span>
@@ -361,6 +414,10 @@ export function App() {
             <>
               <section class="cards">
                 <article class="card">
+                  <h3>Backbones</h3>
+                  <strong>{connectedBackbones} / {backbonePeers.length}</strong>
+                </article>
+                <article class="card">
                   <h3>Links</h3>
                   <strong>{(bmxd.links || []).length}</strong>
                 </article>
@@ -372,14 +429,10 @@ export function App() {
                   <h3>Originators</h3>
                   <strong>{(bmxd.originators || []).length}</strong>
                 </article>
-                <article class="card">
-                  <h3>Community</h3>
-                  <strong>{communityName}</strong>
-                </article>
               </section>
 
-              <section class="grid-2">
-                <section class="panel">
+              <section class="status-layout">
+                <section class="panel panel-status">
                   <h3>Status</h3>
                   <KeyValueTable
                     rows={[
@@ -398,7 +451,7 @@ export function App() {
                   />
                 </section>
 
-                <section class="panel">
+                <section class="panel panel-contact">
                   <h3>Kontakt</h3>
                   <KeyValueTable
                     rows={[
@@ -409,6 +462,8 @@ export function App() {
                     ]}
                   />
                 </section>
+
+                <BackboneTable peers={backbonePeers} />
               </section>
             </>
           ) : null}

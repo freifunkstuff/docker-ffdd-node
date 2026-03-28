@@ -11,6 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from backbone_runtime import LivePeer, build_backbone_payload
 from node_config import (
     build_base_config,
     format_issues,
@@ -25,10 +26,12 @@ SYSINFO_RUNTIME_DIR = Path(os.environ.get("SYSINFO_RUNTIME_DIR", "/run/freifunk/
 SYSINFO_WEBROOT = Path(os.environ.get("SYSINFO_WEBROOT", "/run/freifunk/www"))
 SYSINFO_OUTPUT = Path(os.environ.get("SYSINFO_OUTPUT", str(SYSINFO_RUNTIME_DIR / "sysinfo.json")))
 NODES_OUTPUT = Path(os.environ.get("NODES_OUTPUT", str(SYSINFO_RUNTIME_DIR / "nodes.json")))
+BACKBONE_OUTPUT = Path(os.environ.get("BACKBONE_OUTPUT", str(SYSINFO_RUNTIME_DIR / "backbone.json")))
 SYSINFO_WEB_LINKS = {
     "sysinfo.json": "sysinfo",
     "sysinfo-json.cgi": "sysinfo",
     "nodes.json": "nodes",
+    "backbone.json": "backbone",
 }
 GATEWAY_USAGE_PATH = Path(os.environ.get("GATEWAY_USAGE_PATH", "/data/statistic/gateway_usage"))
 COMMUNITY_DEFAULT_DOMAINS = {
@@ -788,11 +791,12 @@ def write_json_atomic(path: Path, payload: dict) -> None:
     os.replace(temp_name, path)
 
 
-def publish_web_links(output_path: Path, nodes_output_path: Path, webroot: Path) -> None:
+def publish_web_links(output_path: Path, nodes_output_path: Path, backbone_output_path: Path, webroot: Path) -> None:
     webroot.mkdir(parents=True, exist_ok=True)
     targets = {
         "sysinfo": output_path,
         "nodes": nodes_output_path,
+        "backbone": backbone_output_path,
     }
 
     for name, target_name in SYSINFO_WEB_LINKS.items():
@@ -802,14 +806,24 @@ def publish_web_links(output_path: Path, nodes_output_path: Path, webroot: Path)
         link_path.symlink_to(targets[target_name])
 
 
-def render_once(output_path: Path, webroot: Path, nodes_output_path: Path, config: dict | None = None) -> None:
+def render_once(
+    output_path: Path,
+    webroot: Path,
+    nodes_output_path: Path,
+    backbone_output_path: Path,
+    config: dict | None = None,
+    previous_wireguard_live_peers: dict[str, LivePeer] | None = None,
+) -> dict[str, LivePeer]:
     config = require_valid_sysinfo_config(logger=log_info, log_warnings=False) if config is None else config
     state = load_state()
     nodes_payload = build_nodes_payload(config, state)
     payload = render_stub_payload(config, state, nodes_payload=nodes_payload)
+    backbone_payload, wireguard_live_peers = build_backbone_payload(previous_live_peers=previous_wireguard_live_peers)
     write_json_atomic(output_path, payload)
     write_json_atomic(nodes_output_path, nodes_payload)
-    publish_web_links(output_path, nodes_output_path, webroot)
+    write_json_atomic(backbone_output_path, backbone_payload)
+    publish_web_links(output_path, nodes_output_path, backbone_output_path, webroot)
+    return wireguard_live_peers
 
 
 def parse_args() -> argparse.Namespace:
@@ -819,7 +833,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", type=int, default=60, help="Refresh interval in seconds for --loop")
     parser.add_argument("--output", default=str(SYSINFO_OUTPUT), help="Target path for rendered sysinfo JSON")
     parser.add_argument("--nodes-output", default=str(NODES_OUTPUT), help="Target path for rendered nodes JSON")
-    parser.add_argument("--webroot", default=str(SYSINFO_WEBROOT), help="Directory that exposes sysinfo.json, sysinfo-json.cgi and nodes.json symlinks")
+    parser.add_argument("--backbone-output", default=str(BACKBONE_OUTPUT), help="Target path for rendered backbone JSON")
+    parser.add_argument("--webroot", default=str(SYSINFO_WEBROOT), help="Directory that exposes sysinfo.json, sysinfo-json.cgi, nodes.json and backbone.json symlinks")
     return parser.parse_args()
 
 
@@ -827,6 +842,7 @@ def main() -> int:
     args = parse_args()
     output_path = Path(args.output)
     nodes_output_path = Path(args.nodes_output)
+    backbone_output_path = Path(args.backbone_output)
     webroot = Path(args.webroot)
 
     if args.checkconfig:
@@ -836,7 +852,7 @@ def main() -> int:
 
     if not args.loop:
         config = require_valid_sysinfo_config(logger=log_info, log_warnings=False)
-        render_once(output_path, webroot, nodes_output_path, config=config)
+        render_once(output_path, webroot, nodes_output_path, backbone_output_path, config=config)
         return 0
 
     if args.interval < 1:
@@ -844,8 +860,16 @@ def main() -> int:
 
     config = require_valid_sysinfo_config(logger=log_info, log_warnings=False)
     log_info(f"starting sysinfo loop with interval {args.interval}s")
+    previous_wireguard_live_peers: dict[str, LivePeer] = {}
     while True:
-        render_once(output_path, webroot, nodes_output_path, config=config)
+        previous_wireguard_live_peers = render_once(
+            output_path,
+            webroot,
+            nodes_output_path,
+            backbone_output_path,
+            config=config,
+            previous_wireguard_live_peers=previous_wireguard_live_peers,
+        )
         time.sleep(args.interval)
 
 

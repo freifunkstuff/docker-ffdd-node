@@ -40,6 +40,7 @@ sync_file ../files/common/usr/lib/license/pico-de.txt /usr/local/share/freifunk/
 if [ "$mode" = "full" ]; then
   sync_file config/defaults.yaml /usr/local/share/freifunk/defaults.yaml
   sync_file scripts/node_config.py /usr/local/bin/node_config.py 755
+  sync_file scripts/backbone_runtime.py /usr/local/bin/backbone_runtime.py 755
   sync_file scripts/registrar.py /usr/local/bin/registrar.py 755
   sync_file scripts/sysinfo.py /usr/local/bin/sysinfo.py 755
   sync_file scripts/wireguard_status.py /usr/local/bin/wireguard_status.py 755
