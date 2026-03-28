@@ -320,7 +320,7 @@ export function App() {
   const currentTimestamp = nodes?.timestamp || sysinfo?.timestamp;
 
   useEffect(() => {
-    document.title = `${titleName}, ${titleNode}, Freifunk ${titleCommunity}`;
+    document.title = `${titleNode} ${titleName} - Freifunk ${titleCommunity}`;
   }, [titleName, titleNode, titleCommunity]);
 
   return (
