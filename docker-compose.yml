@@ -15,6 +15,7 @@ services:
       - "${FASTD_PORT:-5002}:${FASTD_PORT:-5002}/udp"
     volumes:
       - ./data:/data
+    mem_limit: ${DOCKERNODE_MEM_LIMIT:-200m}
     stop_grace_period: 15s
     environment:
       NODE_CONTACT_EMAIL: ${NODE_CONTACT_EMAIL:-}

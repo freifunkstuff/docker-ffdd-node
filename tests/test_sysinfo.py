@@ -434,6 +434,42 @@ class SysinfoTests(unittest.TestCase):
         self.assertNotIn("bmx_prime_rx", statistic["interfaces"])
         self.assertNotIn("eth0_rx", statistic["interfaces"])
 
+    def test_build_statistic_block_prefers_cgroup_memory_values(self) -> None:
+        def fake_read_text(path: Path) -> str:
+            path_str = str(path)
+            if path_str == "/sys/fs/cgroup/memory.current":
+                return "2097152\n"
+            if path_str == "/sys/fs/cgroup/memory.max":
+                return "4194304\n"
+            if path_str == "/proc/loadavg":
+                return "0.00 0.00 0.00 1/1 1\n"
+            return ""
+
+        with patch.object(sysinfo, "_read_meminfo", return_value={"MemTotal": "100 kB", "MemFree": "50 kB", "Buffers": "5 kB", "Cached": "10 kB"}), patch.object(sysinfo, "_read_cpu_stat", return_value="cpu 1 2 3 4"), patch.object(sysinfo, "_read_gateway_usage", return_value=[]), patch.object(sysinfo, "_read_interface_stats", return_value={}), patch.object(sysinfo, "_read_text", side_effect=fake_read_text):
+            statistic = sysinfo._build_statistic_block()
+
+        self.assertEqual(statistic["meminfo_MemTotal"], "4096 kB")
+        self.assertEqual(statistic["meminfo_MemFree"], "2048 kB")
+
+    def test_build_statistic_block_uses_host_meminfo_without_finite_cgroup_limit(self) -> None:
+        def fake_read_text(path: Path) -> str:
+            path_str = str(path)
+            if path_str == "/sys/fs/cgroup/memory.current":
+                return "2097152\n"
+            if path_str == "/sys/fs/cgroup/memory.max":
+                return "max\n"
+            if path_str == "/sys/fs/cgroup/memory/memory.limit_in_bytes":
+                return "9223372036854771712\n"
+            if path_str == "/proc/loadavg":
+                return "0.00 0.00 0.00 1/1 1\n"
+            return ""
+
+        with patch.object(sysinfo, "_read_meminfo", return_value={"MemTotal": "100 kB", "MemFree": "50 kB", "Buffers": "5 kB", "Cached": "10 kB"}), patch.object(sysinfo, "_read_cpu_stat", return_value="cpu 1 2 3 4"), patch.object(sysinfo, "_read_gateway_usage", return_value=[]), patch.object(sysinfo, "_read_interface_stats", return_value={}), patch.object(sysinfo, "_read_text", side_effect=fake_read_text):
+            statistic = sysinfo._build_statistic_block()
+
+        self.assertEqual(statistic["meminfo_MemTotal"], "100 kB")
+        self.assertEqual(statistic["meminfo_MemFree"], "50 kB")
+
 
 if __name__ == "__main__":
     unittest.main()

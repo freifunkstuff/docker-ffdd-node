@@ -309,7 +309,7 @@ def _build_system_block(config: dict) -> dict:
 
 
 def _build_statistic_block() -> dict:
-    meminfo = _read_meminfo()
+    meminfo = _effective_meminfo()
     block = {
         "meminfo_MemTotal": meminfo.get("MemTotal", ""),
         "meminfo_MemFree": meminfo.get("MemFree", ""),
@@ -611,6 +611,75 @@ def _read_meminfo() -> dict[str, str]:
         key, value = line.split(":", 1)
         result[key.strip()] = value.strip()
     return result
+
+
+def _effective_meminfo() -> dict[str, str]:
+    """Return meminfo with container-aware totals when cgroup limits exist."""
+    host_meminfo = _read_meminfo()
+    total_kb, free_kb = _read_cgroup_memory_kb()
+    if total_kb is None or free_kb is None:
+        return host_meminfo
+
+    merged = dict(host_meminfo)
+    merged["MemTotal"] = f"{total_kb} kB"
+    merged["MemFree"] = f"{free_kb} kB"
+    if "MemAvailable" in merged:
+        merged["MemAvailable"] = f"{free_kb} kB"
+    return merged
+
+
+def _read_cgroup_memory_kb() -> tuple[int | None, int | None]:
+    current_bytes = _read_cgroup_memory_current_bytes()
+    limit_bytes = _read_cgroup_memory_limit_bytes()
+    if current_bytes is None or limit_bytes is None:
+        return None, None
+    if limit_bytes <= 0:
+        return None, None
+
+    free_bytes = max(limit_bytes - current_bytes, 0)
+    return limit_bytes // 1024, free_bytes // 1024
+
+
+def _read_cgroup_memory_current_bytes() -> int | None:
+    # cgroup v2
+    v2_value = _parse_int(_read_text(Path("/sys/fs/cgroup/memory.current")).strip())
+    if v2_value is not None:
+        return v2_value
+
+    # cgroup v1
+    return _parse_int(_read_text(Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")).strip())
+
+
+def _read_cgroup_memory_limit_bytes() -> int | None:
+    # cgroup v2
+    raw_v2 = _read_text(Path("/sys/fs/cgroup/memory.max")).strip()
+    if raw_v2 and raw_v2 != "max":
+        limit_v2 = _parse_int(raw_v2)
+        if _is_finite_cgroup_limit(limit_v2):
+            return limit_v2
+
+    # cgroup v1
+    limit_v1 = _parse_int(_read_text(Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")).strip())
+    if _is_finite_cgroup_limit(limit_v1):
+        return limit_v1
+
+    return None
+
+
+def _is_finite_cgroup_limit(value: int | None) -> bool:
+    if value is None:
+        return False
+    # cgroup v1 often signals "no limit" with huge sentinel-like values.
+    return 0 < value < (1 << 60)
+
+
+def _parse_int(value: str) -> int | None:
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
 
 
 def _read_cpu_stat() -> str:
