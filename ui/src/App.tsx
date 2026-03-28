@@ -95,6 +95,50 @@ function decodeHtmlEntities(text: string): string {
   return textarea.value;
 }
 
+function qualityClass(value: unknown): string {
+  const numeric = Number(String(value ?? '').trim());
+  if (!Number.isFinite(numeric)) {
+    return '';
+  }
+  if (numeric >= 90) {
+    return 'quality-good';
+  }
+  if (numeric >= 50) {
+    return 'quality-medium';
+  }
+  if (numeric >= 10) {
+    return 'quality-low';
+  }
+  if (numeric >= 0) {
+    return 'quality-bad';
+  }
+  return '';
+}
+
+function cellClass(column: keyof NodeRow, value: unknown): string {
+  const classes: string[] = [];
+
+  if (column === 'brc') {
+    classes.push('col-brc');
+  }
+
+  if (column === 'rtq' || column === 'rq' || column === 'tq' || column === 'brc') {
+    const quality = qualityClass(value);
+    if (quality) {
+      classes.push(quality);
+    }
+  }
+
+  return classes.join(' ');
+}
+
+function headerClass(column: keyof NodeRow): string {
+  if (column === 'brc') {
+    return 'col-brc';
+  }
+  return '';
+}
+
 function KeyValueTable({ rows }: { rows: Array<[string, unknown]> }) {
   return (
     <table class="kv-table">
@@ -157,12 +201,16 @@ function NodeTable({
   rows,
   filter,
   emptyText,
+  rowClassName,
+  renderCell,
 }: {
   title: string;
   columns: Array<{ key: keyof NodeRow; label: string }>;
   rows: NodeRow[];
   filter: string;
   emptyText: string;
+  rowClassName?: (row: NodeRow) => string;
+  renderCell?: (row: NodeRow, column: keyof NodeRow) => string | JSX.Element;
 }) {
   const filtered = useMemo(
     () => rows.filter((row) => matchesFilter(row, filter.trim().toLowerCase())),
@@ -180,7 +228,7 @@ function NodeTable({
           <thead>
             <tr>
               {columns.map((column) => (
-                <th key={String(column.key)}>{column.label}</th>
+                <th key={String(column.key)} class={headerClass(column.key)}>{column.label}</th>
               ))}
             </tr>
           </thead>
@@ -191,9 +239,11 @@ function NodeTable({
               </tr>
             ) : (
               filtered.map((row, index) => (
-                <tr key={`${row.ip || row.node || 'row'}-${index}`}>
+                <tr key={`${row.ip || row.node || 'row'}-${index}`} class={rowClassName ? rowClassName(row) : ''}>
                   {columns.map((column) => (
-                    <td key={String(column.key)}>{safe(row[column.key])}</td>
+                    <td key={String(column.key)} class={cellClass(column.key, row[column.key])}>
+                      {renderCell ? renderCell(row, column.key) : safe(row[column.key])}
+                    </td>
                   ))}
                 </tr>
               ))
@@ -426,7 +476,7 @@ export function App() {
                   <strong>{(bmxd.gateways?.gateways || []).length}</strong>
                 </article>
                 <article class="card">
-                  <h3>Originators</h3>
+                  <h3>Freifunk-Knoten</h3>
                   <strong>{(bmxd.originators || []).length}</strong>
                 </article>
               </section>
@@ -502,28 +552,34 @@ export function App() {
                 rows={bmxd.gateways?.gateways || []}
                 filter={nodeFilter}
                 emptyText="Keine passenden Gateways"
+                rowClassName={(row) => (row.ip === bmxd.gateways?.selected ? 'row-active' : '')}
+                renderCell={(row, column) => {
+                  if (column === 'ip' && row.ip === bmxd.gateways?.selected) {
+                    return `${safe(row.ip)} (aktiv)`;
+                  }
+                  return safe(row[column]);
+                }}
                 columns={[
                   { key: 'node', label: 'Node' },
                   { key: 'ip', label: 'IP' },
                   { key: 'best_next_hop', label: 'Best Next Hop' },
-                  { key: 'brc', label: 'BRC' },
                   { key: 'speed', label: 'Speed' },
                   { key: 'usage', label: 'Usage' },
+                  { key: 'brc', label: 'BRC' },
                 ]}
               />
 
               <NodeTable
-                title="Originators"
+                title="Freifunk-Knoten"
                 rows={bmxd.originators || []}
                 filter={nodeFilter}
-                emptyText="Keine passenden Originators"
+                emptyText="Keine passenden Freifunk-Knoten"
                 columns={[
                   { key: 'node', label: 'Node' },
                   { key: 'ip', label: 'IP' },
                   { key: 'interface', label: 'Interface' },
                   { key: 'best_next_hop', label: 'Best Next Hop' },
                   { key: 'brc', label: 'BRC' },
-                  { key: 'type', label: 'Type' },
                 ]}
               />
             </>

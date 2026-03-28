@@ -63,7 +63,7 @@ a:hover {
   font-weight: 700;
   line-height: 1.1;
   text-align: center;
-  color: var(--text);
+  color: var(--accent);
 }
 
 .topbar-community:hover {
@@ -268,6 +268,44 @@ thead th {
 
 .kv-table td {
   white-space: normal;
+}
+
+td.quality-good,
+td.quality-medium,
+td.quality-low,
+td.quality-bad {
+  font-weight: 700;
+}
+
+td.quality-good {
+  background: rgba(0, 204, 0, 0.22);
+  color: #b7ffb7;
+}
+
+td.quality-medium {
+  background: rgba(255, 203, 5, 0.2);
+  color: #ffe082;
+}
+
+td.quality-low {
+  background: rgba(255, 102, 0, 0.2);
+  color: #ffb47a;
+}
+
+td.quality-bad {
+  background: rgba(187, 51, 51, 0.26);
+  color: #ffb3b3;
+}
+
+th.col-brc,
+td.col-brc {
+  width: 9ch;
+  min-width: 9ch;
+}
+
+tr.row-active td {
+  box-shadow: inset 0 0 0 9999px rgba(255, 255, 255, 0.08);
+  font-weight: 700;
 }
 
 input[type="search"] {
