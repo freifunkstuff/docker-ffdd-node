@@ -30,6 +30,15 @@ if [ "${SKIP_FAILFAST:-0}" != "1" ]; then
     python3 /usr/local/bin/sysinfo.py --checkconfig
 fi
 
+# Dynamische App-Hooks
+if [ -d /etc/docker-entrypoint.d ]; then
+    for hook in /etc/docker-entrypoint.d/*; do
+        if [ -x "$hook" ]; then
+            "$hook" || exit 1
+        fi
+    done
+fi
+
 if [ "${REGISTRAR_ONLY:-0}" = "1" ]; then
     exec python3 /usr/local/bin/registrar.py
 fi

@@ -12,7 +12,6 @@ services:
       - /dev/net/tun:/dev/net/tun
     ports:
       - "${HTTP_PORT:-80}:80"
-      - "${FASTD_PORT:-5002}:${FASTD_PORT:-5002}/udp"
     volumes:
       - ./data:/data
     mem_limit: 200m
