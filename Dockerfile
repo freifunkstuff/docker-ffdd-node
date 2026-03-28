@@ -97,7 +97,7 @@ COPY --from=builder /build/firmware/files/common/usr/lib/license/agreement-de.tx
 COPY --from=builder /build/firmware/files/common/usr/lib/license/pico-de.txt /usr/local/share/freifunk/pico-de.txt
 COPY --from=builder /build/firmware/license/gpl2-en.txt /usr/local/share/freifunk/gpl2.txt
 COPY --from=builder /build/firmware/license/gpl3-en.txt /usr/local/share/freifunk/gpl3.txt
-COPY scripts/node_config.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /usr/local/bin/
+COPY scripts/backbone_runtime.py scripts/node_config.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /usr/local/bin/
 COPY scripts/fastd-backbone-cmd.sh /usr/lib/fastd/backbone-cmd.sh
 COPY scripts/bmxd-launcher.sh /usr/local/bin/bmxd-launcher.sh
 COPY scripts/bmxd-gateway.py /usr/lib/bmxd/bmxd-gateway.py
@@ -127,7 +127,7 @@ CMD []
 
 FROM runtime-base AS tests
 
-COPY scripts/node_config.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py scripts/run_gateway_script.py scripts/bmxd-gateway.py /opt/freifunk-tests/scripts/
+COPY scripts/backbone_runtime.py scripts/node_config.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py scripts/run_gateway_script.py scripts/bmxd-gateway.py /opt/freifunk-tests/scripts/
 COPY tests/ /opt/freifunk-tests/tests/
 RUN cd /opt/freifunk-tests \
  && python3 -m unittest discover -v -s tests -t . \
