@@ -41,6 +41,31 @@ Optional:
 docker compose build dockernode
 ```
 
+## CI Release (Tag -> Image-Tag)
+
+Bei einem Git-Tag-Push baut GitHub Actions automatisch ein Image und pusht es nach GHCR:
+
+- `ghcr.io/<owner>/ffdd-node:<tag>`
+- Push auf `master` erzeugt zusätzlich: `ghcr.io/<owner>/ffdd-node:master`
+
+Beispiel:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Ergebnis:
+
+- `ghcr.io/<owner>/ffdd-node:v1.0.0`
+
+Pull-Beispiel:
+
+```bash
+docker pull ghcr.io/<owner>/ffdd-node:master
+docker pull ghcr.io/<owner>/ffdd-node:v1.0.0
+```
+
 ## 3) Starten
 
 ```bash

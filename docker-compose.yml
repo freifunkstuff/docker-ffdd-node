@@ -1,10 +1,10 @@
 services:
   dockernode:
-    container_name: ${DOCKERNODE_CONTAINER_NAME:-freifunk-dockernode}
+    container_name: ${DOCKERNODE_CONTAINER_NAME:-ffdd-node}
     build:
       context: .
       dockerfile: Dockerfile
-    image: ${DOCKERNODE_IMAGE:-freifunk-dockernode}
+    image: ${DOCKERNODE_IMAGE:-ffdd-node}
     restart: unless-stopped
     cap_add:
       - NET_ADMIN
