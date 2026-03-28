@@ -1,0 +1,2 @@
+#!/bin/sh
+exec python3 -u /usr/local/bin/sysinfo.py --loop --interval 30

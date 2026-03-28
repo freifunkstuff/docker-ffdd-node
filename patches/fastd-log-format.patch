@@ -1,0 +1,14 @@
+diff -Naur --suppress-blank-empty --strip-trailing-cr src.org/log.c src/log.c
+--- fastd/src.org/log.c	2015-12-14 22:38:41.000000000 +0100
++++ fastd/src/log.c	2026-03-27 08:00:00.000000000 +0100
+@@ -278,7 +278,7 @@
+-			if (strftime(timestr, sizeof(timestr), "%F %T %z --- ", &tm) <= 0)
++			if (strftime(timestr, sizeof(timestr), "%F %T %z ", &tm) <= 0)
+				timestr[0] = 0;
+		}
+
+-		fprintf(stderr, "%s%s%s\n", timestr, get_log_prefix(level), buffer);
++		fprintf(stderr, "%s[fastd] %s%s\n", timestr, get_log_prefix(level), buffer);
+	}
+
+	if (log_syslog)

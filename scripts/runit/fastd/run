@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+FASTD_CONFIG="${FASTD_CONFIG:-/run/freifunk/fastd/fastd.conf}"
+
+while [ ! -f "$FASTD_CONFIG" ]; do
+    sleep 1
+done
+
+exec fastd --config "$FASTD_CONFIG"
