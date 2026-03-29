@@ -68,7 +68,7 @@ docker-compose exec -T dockernode sh -lc 'mkdir -p /run/freifunk/www/licenses &&
 if [ "$mode" = "full" ]; then
   docker-compose exec -T dockernode sh -lc 'nginx -t && sv restart registrar && sv restart sysinfo && sv restart wireguard && sv restart fastd && sv restart bmxd && sv restart mesh-status && sv restart nginx && sleep 1 && sv status registrar && sv status sysinfo && sv status wireguard && sv status fastd && sv status bmxd && sv status mesh-status && sv status nginx'
 else
-  docker-compose exec -T dockernode sh -lc 'nginx -t >/dev/null && sv status nginx'
+  docker-compose exec -T dockernode sh -lc 'nginx -t >/dev/null && sv restart nginx && sleep 1 && sv status nginx'
 fi
 
 echo "sync complete ($mode)"

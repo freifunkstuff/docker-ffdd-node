@@ -87,3 +87,23 @@ export type MeshStatusPayload = {
     connected?: boolean;
   };
 };
+
+export type UiExtensionDefinition = {
+  id: string;
+  label: string;
+  order: number;
+  hash: string;
+  entry: string;
+  endpoints: string[];
+  style?: string;
+};
+
+export type UiExtensionsIndexPayload = {
+  extensions?: UiExtensionDefinition[];
+};
+
+export type UiExtensionRuntimeData = {
+  data: Record<string, unknown>;
+  error: string;
+  updatedAt: number | null;
+};
