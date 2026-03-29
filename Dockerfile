@@ -56,6 +56,7 @@ COPY ui/package.json /build/ui/package.json
 COPY ui/tsconfig.json /build/ui/tsconfig.json
 COPY ui/vite.config.ts /build/ui/vite.config.ts
 COPY ui/index.html /build/ui/index.html
+COPY ui/public/ /build/ui/public/
 COPY ui/src/ /build/ui/src/
 RUN npm install --no-audit --no-fund
 RUN npm run build
