@@ -71,3 +71,19 @@ export type BackbonePayload = {
   timestamp?: string;
   peers?: BackbonePeer[];
 };
+
+export type MeshStatusPayload = {
+  updated_at?: string;
+  mesh?: {
+    connected?: boolean;
+    stable?: boolean;
+    checked_links?: number;
+    reachable_links?: number;
+    connected_duration?: number;
+    stable_after?: number;
+  };
+  gateway?: {
+    selected?: string;
+    connected?: boolean;
+  };
+};

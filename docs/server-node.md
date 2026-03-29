@@ -30,6 +30,8 @@ Der Server-Node ist als einzelner Container mit klar getrennten Laufzeitrollen a
 - [dockernode/scripts/wireguard_status.py](dockernode/scripts/wireguard_status.py) liest `wireguard.env`, pollt `wg show <interface> dump` und loggt Zustände für konfigurierte Peers.
 - [dockernode/scripts/runit/wireguard/run](dockernode/scripts/runit/wireguard/run) startet den WireGuard-Statusdienst zyklisch mit Polling-Intervall und Stale-Schwelle.
 - [dockernode/scripts/runit/fastd/run](dockernode/scripts/runit/fastd/run) startet `fastd`, sobald die vom Registrator erzeugte `fastd.conf` vorhanden ist.
+- [dockernode/scripts/mesh-status.py](dockernode/scripts/mesh-status.py) bewertet zyklisch den aktuellen Mesh-Zustand anhand von `bmxd --links` und `bmxd --gateways` und schreibt das Ergebnis nach `/run/freifunk/state/mesh-status.json`.
+- [dockernode/scripts/runit/mesh-status/run](dockernode/scripts/runit/mesh-status/run) startet den Mesh-Status-Dienst zyklisch im Vordergrund.
 - [dockernode/scripts/runit/nginx/run](dockernode/scripts/runit/nginx/run) startet `nginx` mit `daemon off` und liefert `/run/freifunk/www` auf Port 80 aus.
 - [dockernode/config/nginx.conf](dockernode/config/nginx.conf) definiert die nginx-Auslieferung für JSON-Endpunkte (`/sysinfo.json`, `/sysinfo-json.cgi`, `/nodes.json`), die UI unter `/ui/` sowie statische Rechtstexte unter `/licenses/*`.
 - [dockernode/scripts/bmxd-launcher.sh](dockernode/scripts/bmxd-launcher.sh) wartet auf die vom Registrator erzeugte `bmxd.env`, bereitet Interfaces und Policy Rule vor und startet anschließend `bmxd`.
@@ -50,13 +52,21 @@ Wichtig dabei: Der Registrator startet `fastd` und `bmxd` nicht direkt per `exec
 ### Laufzeit- und Änderungsmodell
 
 - Persistente Knotendaten liegen in `/data/node.yaml`.
-- Flüchtige Laufzeitdateien liegen unter `/run/freifunk/fastd`, `/run/freifunk/wireguard`, `/run/freifunk/bmxd`, `/run/freifunk/sysinfo` und `/run/freifunk/www`.
+- Flüchtige Laufzeitdateien liegen unter `/run/freifunk/fastd`, `/run/freifunk/wireguard`, `/run/freifunk/bmxd`, `/run/freifunk/sysinfo`, `/run/freifunk/state` und `/run/freifunk/www`.
 - Der WireGuard-Dienst liest seine Konfiguration aus `/run/freifunk/wireguard/wireguard.env` und loggt Änderungen ausschließlich anhand der vom Registrator erzeugten Peer-Liste und `wg`-Live-Daten.
 - Der Registrator läuft zyklisch und prüft in jedem Durchlauf, ob sich registrierungsrelevante oder gerenderte Inhalte geändert haben.
 - Der Sysinfo-Dienst läuft ebenfalls zyklisch und schreibt immer den aktuellen JSON-Stand in das volatile Runtime-Verzeichnis.
+- Der Mesh-Status-Dienst schreibt zyklisch nach `/run/freifunk/state/mesh-status.json` und fasst dort den beobachteten Zustand von Mesh und selektiertem Gateway zusammen.
 - Nur bei inhaltlichen Änderungen werden Runtime-Dateien neu geschrieben.
 - Im Loop-Modus löst der Registrator danach gezielt `sv restart` für `fastd` und/oder `bmxd` aus.
 - Backbone-Routing zwischen mehreren Fastd-/WireGuard-Links erfolgt nicht per Bridge, sondern über `bmxd`-gesteuerte Routen in der Policy-Routing-Tabelle.
+
+Semantik von `/run/freifunk/state/mesh-status.json`:
+
+- `mesh.connected`: mindestens ein geprüftes Ziel aus `bmxd -c --links` ist erreichbar
+- `mesh.stable`: `mesh.connected` liegt seit mindestens 30 Sekunden ohne Unterbrechung an
+- `gateway.selected`: aktuell selektiertes Gateway aus `bmxd -c --gateways`, leer wenn keines selektiert ist
+- `gateway.connected`: das selektierte Gateway ist erreichbar
 
 Damit ergibt sich folgende Semantik:
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import type { BackbonePayload, BackbonePeer, NodesPayload, NodeRow, SysinfoPayload } from './types';
+import type { BackbonePayload, BackbonePeer, MeshStatusPayload, NodesPayload, NodeRow, SysinfoPayload } from './types';
 
 type ViewKey = 'status' | 'nodes' | 'licenses';
 
@@ -154,6 +154,40 @@ function KeyValueTable({ rows }: { rows: Array<[string, unknown]> }) {
   );
 }
 
+function boolLabel(value: boolean | undefined, whenTrue: string, whenFalse: string): string {
+  return value ? whenTrue : whenFalse;
+}
+
+function StatusPanel({ meshStatus }: { meshStatus: MeshStatusPayload | null }) {
+  const mesh = meshStatus?.mesh || {};
+  const gateway = meshStatus?.gateway || {};
+  const meshText = mesh.stable ? 'Connected' : mesh.connected ? 'Stabilizing' : 'Disconnected';
+  const meshClass = mesh.stable ? 'connected' : mesh.connected ? 'stale' : 'disconnected';
+  const gatewayText = boolLabel(gateway.connected, 'Connected', 'Disconnected');
+  const gatewayClass = gateway.connected ? 'connected' : 'disconnected';
+
+  return (
+    <section class="panel panel-runtime-status">
+      <h3>Status</h3>
+      <div class="status-summary">
+        <div class="status-summary-row">
+          <span>Mesh</span>
+          <span class={`status-pill ${meshClass}`}>{meshText}</span>
+        </div>
+        <div class="status-summary-row">
+          <div class="status-summary-label">
+            <span>Gateway</span>
+            {gateway.selected ? <span class="status-summary-meta">{gateway.selected}</span> : null}
+          </div>
+          <div class="status-summary-value">
+            <span class={`status-pill ${gatewayClass}`}>{gatewayText}</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function BackboneTable({ peers }: { peers: BackbonePeer[] }) {
   return (
     <section class="panel panel-backbones">
@@ -260,6 +294,7 @@ export function App() {
   const [sysinfo, setSysinfo] = useState<SysinfoPayload | null>(null);
   const [nodes, setNodes] = useState<NodesPayload | null>(null);
   const [backbone, setBackbone] = useState<BackbonePayload | null>(null);
+  const [meshStatus, setMeshStatus] = useState<MeshStatusPayload | null>(null);
   const [error, setError] = useState<string>('');
   const [nodeFilter, setNodeFilter] = useState<string>('');
   const [legalTexts, setLegalTexts] = useState<LegalTextState>({});
@@ -286,10 +321,11 @@ export function App() {
       const attemptAt = Math.floor(Date.now() / 1000);
       setLastRefreshAttempt(attemptAt);
       try {
-        const [sysinfoData, nodesData, backboneData] = await Promise.all([
+        const [sysinfoData, nodesData, backboneData, meshStatusData] = await Promise.all([
           loadJson<SysinfoPayload>('/sysinfo.json'),
           loadJson<NodesPayload>('/nodes.json'),
           loadJson<BackbonePayload>('/backbone.json'),
+          loadJson<MeshStatusPayload>('/mesh-status.json'),
         ]);
         if (canceled) {
           return;
@@ -297,6 +333,7 @@ export function App() {
         setSysinfo(sysinfoData);
         setNodes(nodesData);
         setBackbone(backboneData);
+        setMeshStatus(meshStatusData);
         setError('');
         setRetryAfter(0);
       } catch (err) {
@@ -351,14 +388,16 @@ export function App() {
       refreshInFlightRef.current = true;
 
       try {
-        const [sysinfoData, nodesData, backboneData] = await Promise.all([
+        const [sysinfoData, nodesData, backboneData, meshStatusData] = await Promise.all([
           loadJson<SysinfoPayload>('/sysinfo.json'),
           loadJson<NodesPayload>('/nodes.json'),
           loadJson<BackbonePayload>('/backbone.json'),
+          loadJson<MeshStatusPayload>('/mesh-status.json'),
         ]);
         setSysinfo(sysinfoData);
         setNodes(nodesData);
         setBackbone(backboneData);
+        setMeshStatus(meshStatusData);
         setError('');
         setRetryAfter(0);
       } catch (err) {
@@ -415,10 +454,14 @@ export function App() {
   const titleName = safe(contact.name, 'Freifunk Knoten');
   const titleNode = safe(common.node, '?');
   const titleCommunity = safe(common.community, '?');
-  const currentTimestamp = [sysinfo?.timestamp, nodes?.timestamp, backbone?.timestamp]
-    .map((value) => Number(value || 0))
-    .reduce((latest, value) => (value > latest ? value : latest), 0)
-    .toString();
+  const currentTimestamp = (() => {
+    const runtimeTimestamps = [sysinfo?.timestamp, nodes?.timestamp, backbone?.timestamp]
+      .map((value) => Number(value || 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const meshTimestamp = meshStatus?.updated_at ? Math.floor(new Date(meshStatus.updated_at).getTime() / 1000) : 0;
+    const latest = [...runtimeTimestamps, meshTimestamp].reduce((acc, value) => (value > acc ? value : acc), 0);
+    return String(latest);
+  })();
 
   useEffect(() => {
     document.title = `${titleNode} ${titleName} - Freifunk ${titleCommunity}`;
@@ -482,8 +525,10 @@ export function App() {
               </section>
 
               <section class="status-layout">
+                <StatusPanel meshStatus={meshStatus} />
+
                 <section class="panel panel-status">
-                  <h3>Status</h3>
+                  <h3>Info</h3>
                   <KeyValueTable
                     rows={[
                       ['Node-ID', common.node],
