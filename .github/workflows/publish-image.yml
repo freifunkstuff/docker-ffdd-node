@@ -35,3 +35,5 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/ffdd-node:${{ github.ref_name }}
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/ffdd-node:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/ffdd-node:buildcache,mode=max
