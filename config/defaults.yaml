@@ -7,4 +7,8 @@ BACKBONE_PEERS: >
 
 NODE_REGISTRATION_URL: https://selfsigned.register.freifunk-dresden.de/bot.php?registerkey=__NODE_REGISTER_KEY__&node=__NODE_ID__
 
+# Blank: system trust for custom HTTPS URLs; bundled FFDD CA only for the
+# exact selfsigned.register.freifunk-dresden.de hostname. Explicit PEM override.
+NODE_REGISTRATION_CA_FILE: ""
+
 INITIAL_NODE_ID: 52001

@@ -68,6 +68,19 @@ class ConfigResult:
 ConfigSchema = tuple[dict[str, Any], ...]
 
 
+REGISTRATION_TLS_CONFIG_SCHEMA: ConfigSchema = (
+    {
+        "env": "NODE_REGISTRATION_CA_FILE",
+        "default_key": "NODE_REGISTRATION_CA_FILE",
+        "path": ("registrar", "registration_ca_file"),
+        "type": "str",
+        "default": "",
+        "allow_blank": True,
+        "blank_env_uses_default": True,
+    },
+)
+
+
 def node_addresses(node_id: int) -> dict[str, str]:
     middle = (node_id // 255) % 256
     minor = (node_id % 255) + 1

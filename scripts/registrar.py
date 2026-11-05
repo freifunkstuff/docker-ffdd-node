@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import re
 import secrets
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -21,12 +21,15 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from node_config import (  # noqa: E402
+    REGISTRATION_TLS_CONFIG_SCHEMA,
     build_base_config,
     load_state,
     node_addresses,
     require_valid_config as require_valid_node_config,
     save_state,
 )
+
+from registration_tls import build_registration_ssl_context  # noqa: E402
 
 
 FASTD_RUNTIME_DIR = Path(os.environ.get("FASTD_RUNTIME_DIR", "/run/freifunk/fastd"))
@@ -49,6 +52,7 @@ WIREGUARD_KEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 
 
 REGISTRAR_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
+    *REGISTRATION_TLS_CONFIG_SCHEMA,
     {
         "env": "REGISTRAR_INTERVAL",
         "path": ("registrar", "interval"),
@@ -153,6 +157,10 @@ def require_valid_registrar_config(
     )
 
     issues: list[str] = []
+    try:
+        build_registration_ssl_context(config)
+    except ValueError as exc:
+        issues.append(str(exc))
     registration_url = str(config["registrar"]["registration_url"])
     if REGISTER_KEY_PLACEHOLDER not in registration_url or NODE_ID_PLACEHOLDER not in registration_url:
         issues.append(
@@ -733,10 +741,14 @@ def _list_wireguard_tunnels() -> list[str]:
 
 def _sync_wireguard_peers(interface: str, peers: list[dict[str, str]]) -> None:
     result = subprocess.run(["wg", "show", interface, "peers"], capture_output=True, text=True, check=False)
-    if result.returncode == 0:
-        for peer_key in [line.strip() for line in result.stdout.splitlines() if line.strip()]:
-            subprocess.run(["wg", "set", interface, "peer", peer_key, "remove"], check=False)
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+    current_keys = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    desired_keys = {peer["key"] for peer in peers}
 
+    # Update in place on every reconcile: wg resolves hostnames only when setting
+    # the endpoint. This also repairs missing/partially applied live peer state.
+    # Never remove healthy peers first; a DNS/apply failure must not drop them.
     for peer in peers:
         remote_wg_ip = node_addresses(int(peer["node"]))["wireguard_ip"]
         subprocess.run(
@@ -755,6 +767,9 @@ def _sync_wireguard_peers(interface: str, peers: list[dict[str, str]]) -> None:
             ],
             check=True,
         )
+
+    for peer_key in sorted(current_keys - desired_keys):
+        subprocess.run(["wg", "set", interface, "peer", peer_key, "remove"], check=True)
 
 
 def _ensure_wireguard_interface(secret: str, assigned_node_id: int, listen_port: int) -> bool:
@@ -831,29 +846,45 @@ def reconcile_wireguard_runtime(
     )
 
     WIREGUARD_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    config_changed = write_text_atomic(WIREGUARD_ENV_FILE, desired_content)
+    pending_file = WIREGUARD_RUNTIME_DIR / "apply-pending"
+    retry_incomplete_apply = pending_file.exists()
+    config_changed = (
+        not WIREGUARD_ENV_FILE.exists()
+        or WIREGUARD_ENV_FILE.read_text(encoding="utf-8") != desired_content
+    )
+
+    # A process may die after creating a link but before configuring it. Keep
+    # an explicit dirty record until the full kernel apply has succeeded.
+    write_text_atomic(pending_file, "applying\n")
 
     if not peers:
         stale_ifaces = _list_wireguard_tunnels()
+        if config_changed or retry_incomplete_apply or stale_ifaces or _link_exists(WIREGUARD_INTERFACE):
+            (BMXD_RUNTIME_DIR / "service-applied.sha256").unlink(missing_ok=True)
         for ifname in stale_ifaces:
-            _run_ip("link", "del", ifname, check=False)
-        if _link_exists(WIREGUARD_INTERFACE):
-            _run_ip("link", "del", WIREGUARD_INTERFACE, check=False)
-            return True, []
-        return config_changed or bool(stale_ifaces), []
+            _run_ip("link", "del", ifname)
+        interface_existed = _link_exists(WIREGUARD_INTERFACE)
+        if interface_existed:
+            _run_ip("link", "del", WIREGUARD_INTERFACE)
+        write_text_atomic(WIREGUARD_ENV_FILE, desired_content)
+        pending_file.unlink()
+        return config_changed or retry_incomplete_apply or bool(stale_ifaces) or interface_existed, []
 
     interface_changed = _ensure_wireguard_interface(secret, assigned_node_id, listen_port)
     current_ifaces = set(_list_wireguard_tunnels())
     desired_ifaces_set = set(desired_ifaces)
     stale_ifaces = sorted(current_ifaces - desired_ifaces_set)
     missing_ifaces = sorted(desired_ifaces_set - current_ifaces)
-    needs_sync = config_changed or interface_changed or bool(stale_ifaces) or bool(missing_ifaces)
-
+    needs_sync = config_changed or retry_incomplete_apply or interface_changed or bool(stale_ifaces) or bool(missing_ifaces)
     if needs_sync:
-        _sync_wireguard_peers(WIREGUARD_INTERFACE, peers)
+        # Survives registrar/fastd failures before bmxd can acknowledge the new
+        # interface topology, even when all configuration file hashes match.
+        (BMXD_RUNTIME_DIR / "service-applied.sha256").unlink(missing_ok=True)
+
+    _sync_wireguard_peers(WIREGUARD_INTERFACE, peers)
 
     for ifname in stale_ifaces:
-        _run_ip("link", "del", ifname, check=False)
+        _run_ip("link", "del", ifname)
 
     for peer in peers:
         ifname = peer["ifname"]
@@ -867,7 +898,10 @@ def reconcile_wireguard_runtime(
                 addresses["mesh_broadcast"],
             )
 
-    return config_changed or interface_changed or bool(stale_ifaces) or bool(missing_ifaces), desired_ifaces
+    # Publish only after the entire apply succeeds; a failure remains retryable.
+    write_text_atomic(WIREGUARD_ENV_FILE, desired_content)
+    pending_file.unlink()
+    return needs_sync, desired_ifaces
 
 
 def render_bmxd_runtime(config: dict, assigned_node_id: int, backbone_interfaces: list[str] | None = None) -> bool:
@@ -918,16 +952,39 @@ def build_registration_url(config: dict, register_key: str, node_id: int) -> str
     return url
 
 
+class RegistrationRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never forward registration credentials to plaintext or another origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        original = urllib.parse.urlsplit(req.full_url)
+        target = urllib.parse.urlsplit(newurl)
+        if (
+            target.scheme.lower() != "https"
+            or target.hostname != original.hostname
+            or (target.port or 443) != (original.port or 443)
+            or target.username is not None
+            or target.password is not None
+        ):
+            raise urllib.error.URLError("registration redirect outside trusted HTTPS origin refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def register_once(config: dict, state: dict) -> tuple[int, str]:
     register_key = ensure_register_key(state)
     node_id = ensure_node_id(state, int(config["registrar"]["initial_node_id"]))
     url = build_registration_url(config, register_key, node_id)
 
     request = urllib.request.Request(url, headers={"User-Agent": "dockernode-registrar/1"})
-    context = ssl._create_unverified_context()
+    try:
+        context = build_registration_ssl_context(config)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context), RegistrationRedirectHandler()
+    )
 
     try:
-        with urllib.request.urlopen(request, context=context, timeout=20) as response:
+        with opener.open(request, timeout=20) as response:
             body = response.read().decode("utf-8", errors="replace")
     except urllib.error.URLError as exc:
         raise SystemExit(f"registration request failed: {exc}") from exc
@@ -952,7 +1009,31 @@ def register_once(config: dict, state: dict) -> tuple[int, str]:
 
 
 def restart_service(name: str) -> None:
-    subprocess.run(["sv", "restart", f"/etc/service/{name}"], check=False)
+    subprocess.run(["sv", "restart", f"/etc/service/{name}"], check=True)
+
+
+def reconcile_service(name: str, paths: list[Path], marker: Path, force: bool = False) -> None:
+    """Track successfully applied generations, independently of registrar lifetime.
+
+    Runtime files describe desired state, not whether a surviving daemon loaded
+    it. Keep this separate acknowledgement only after a successful sv restart.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        digest.update(str(path).encode("utf-8") + b"\0")
+        if path.exists():
+            content = path.read_bytes()
+            digest.update(str(len(content)).encode("ascii") + b":" + content)
+        else:
+            digest.update(b"missing")
+    generation = digest.hexdigest() + "\n"
+    if not force and marker.exists() and marker.read_text(encoding="utf-8") == generation:
+        return
+    # Invalidate first, including forced repairs whose file content is unchanged.
+    # A restart failure must be retried by the next registrar process/iteration.
+    marker.unlink(missing_ok=True)
+    restart_service(name)
+    write_text_atomic(marker, generation)
 
 
 def run_iteration(
@@ -1009,11 +1090,18 @@ def run_iteration(
         backbone_interfaces,
     )
 
-    if loop_mode and not first_iteration:
-        if fastd_changed:
-            restart_service("fastd")
-        if bmxd_changed or wireguard_changed or str(previous_node_id) != str(assigned_node_id):
-            restart_service("bmxd")
+    if loop_mode:
+        reconcile_service(
+            "fastd",
+            [FASTD_CONFIG, FASTD_ENV_FILE, *PEER_DIR.glob("*.conf")],
+            FASTD_RUNTIME_DIR / "service-applied.sha256",
+        )
+        reconcile_service(
+            "bmxd",
+            [BMXD_ENV_FILE, WIREGUARD_ENV_FILE],
+            BMXD_RUNTIME_DIR / "service-applied.sha256",
+            force=wireguard_changed or str(previous_node_id) != str(assigned_node_id),
+        )
 
     addresses = node_addresses(assigned_node_id)
     if fastd_secret_created:

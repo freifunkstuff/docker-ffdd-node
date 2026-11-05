@@ -2,6 +2,15 @@
 set -eu
 
 FASTD_CONFIG="${FASTD_CONFIG:-/run/freifunk/fastd/fastd.conf}"
+STATUS_DIR="${FASTD_STATUS_DIR:-/run/freifunk/fastd/backbone_status}"
+
+# Clear the previous daemon's state even when it crashed without hooks, and
+# before waiting for configuration. Never recursively remove status contents.
+for marker in "$STATUS_DIR"/* "$STATUS_DIR"/.[!.]* "$STATUS_DIR"/..?*; do
+    if [ -f "$marker" ] || [ -L "$marker" ]; then
+        rm -f -- "$marker"
+    fi
+done
 
 while [ ! -f "$FASTD_CONFIG" ]; do
     sleep 1
