@@ -1,8 +1,11 @@
+export type RegistrationMode = 'temporary' | 'registered';
+
 export type SysinfoPayload = {
   timestamp?: string;
   data?: {
     common?: {
       node?: string;
+      registration_mode?: RegistrationMode;
       community?: string;
       domain?: string;
       ip?: string;
@@ -43,11 +46,16 @@ export type NodeRow = {
   brc?: string;
   speed?: string;
   usage?: string;
+  preferred?: boolean;
+  selected?: boolean;
   type?: string;
 };
 
 export type NodesPayload = {
   timestamp?: string;
+  node?: {
+    registration_mode?: RegistrationMode;
+  };
   bmxd?: {
     links?: NodeRow[];
     originators?: NodeRow[];

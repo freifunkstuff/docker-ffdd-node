@@ -210,7 +210,7 @@ FFDD-ID von 900 bis 999 verwendet. Die Firmware-Formel bleibt erhalten:
 Die Uptime wird an Container angepasst: Host-Uptime minus Startzeit von Container-
 PID 1. Das Ergebnis liegt separat unter `temporary.node_id` im persistenten
 Zustand und wird beim Neustart wiederverwendet. Eine vorhandene reguläre
-Registrierung wird nicht überschrieben.
+Registrierung wird nicht überschrieben; die UI kennzeichnet temporären Betrieb.
 Der kleine Bereich ist nicht global reserviert und kann kollidieren. Ein Wechsel
 auf registrierten Betrieb erfolgt ausdrücklich über Modusänderung und Neustart.
 
@@ -337,12 +337,15 @@ ist eine Vertrauensentscheidung des Betreibers, kein Authentizitätsnachweis;
 es sollte so klein wie möglich sein. Es gibt weder Client-DHCP noch eine neue
 Internet-Gateway-Ankündigung.
 
-## Gateway-Präferenz
+## Gateway-Präferenz und Anzeige
 
 `BMXD_PREFERRED_GATEWAY=10.200.200.21` übergibt die primäre Mesh-IP als bmxd-
 Präferenz (`-p`). Ein geeignetes erreichbares bevorzugtes Gateway gewinnt gegen
 bessere Alternativen; fehlt es oder zieht sein Gateway-Angebot zurück, kann bmxd
-auf ein anderes Gateway ausweichen.
+auf ein anderes Gateway ausweichen. Die Nodes-Ansicht zeigt **Bevorzugt** (★) und
+**Aktiv** (●) unabhängig voneinander zwischen den Spalten **Usage** und **BRC**. Eine
+bevorzugte Adresse ist nicht automatisch der aktuell gewählte Exit; die aktive
+Gateway-Zeile erhält keinen besonderen Hintergrund mehr.
 
 `BMXD_ONLY_COMMUNITY_GATEWAYS=true` (Default) wählt nur Gateway-Ankündigungen mit
 dem bmxd-Merkmal `COMMUNITY_GATEWAY`. Mit `false` werden auch andere angebotene

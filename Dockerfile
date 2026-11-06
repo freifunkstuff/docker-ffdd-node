@@ -57,8 +57,9 @@ COPY ui/tsconfig.json /build/ui/tsconfig.json
 COPY ui/vite.config.ts /build/ui/vite.config.ts
 COPY ui/index.html /build/ui/index.html
 COPY ui/src/ /build/ui/src/
+COPY ui/tests/ /build/ui/tests/
 RUN npm install --no-audit --no-fund
-RUN npm run build
+RUN npm test && npm run build
 
 
 FROM alpine:3.23 AS staging

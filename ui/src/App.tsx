@@ -1,4 +1,5 @@
 import type { ComponentChild } from 'preact';
+import { GATEWAY_COLUMNS, gatewayIndicators } from './gateways';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type {
   BackbonePayload,
@@ -6,6 +7,7 @@ import type {
   MeshStatusPayload,
   NodesPayload,
   NodeRow,
+  RegistrationMode,
   SysinfoPayload,
   UiExtensionDefinition,
   UiExtensionRuntimeData,
@@ -235,6 +237,9 @@ function qualityClass(value: unknown): string {
 function cellClass(column: keyof NodeRow, value: unknown): string {
   const classes: string[] = [];
 
+  if (column === 'preferred' || column === 'selected') {
+    classes.push('col-gateway-indicator');
+  }
   if (column === 'brc') {
     classes.push('col-brc');
   }
@@ -250,6 +255,9 @@ function cellClass(column: keyof NodeRow, value: unknown): string {
 }
 
 function headerClass(column: keyof NodeRow): string {
+  if (column === 'preferred' || column === 'selected') {
+    return 'col-gateway-indicator';
+  }
   if (column === 'brc') {
     return 'col-brc';
   }
@@ -275,7 +283,13 @@ function boolLabel(value: boolean | undefined, whenTrue: string, whenFalse: stri
   return value ? whenTrue : whenFalse;
 }
 
-function StatusPanel({ meshStatus }: { meshStatus: MeshStatusPayload | null }) {
+function StatusPanel({ meshStatus, registrationMode, nodeId }: {
+  meshStatus: MeshStatusPayload | null;
+  registrationMode: RegistrationMode | undefined;
+  nodeId: string | undefined;
+}) {
+  const identityText = registrationMode === 'temporary' ? 'Temporär' : registrationMode === 'registered' ? 'Registriert' : 'Unbekannt';
+  const identityClass = registrationMode === 'temporary' ? 'stale' : registrationMode === 'registered' ? 'connected' : 'identity-unknown';
   const mesh = meshStatus?.mesh || {};
   const gateway = meshStatus?.gateway || {};
   const meshText = mesh.stable ? 'Connected' : mesh.connected ? 'Stabilizing' : 'Disconnected';
@@ -287,6 +301,10 @@ function StatusPanel({ meshStatus }: { meshStatus: MeshStatusPayload | null }) {
     <section class="panel panel-runtime-status">
       <h3>Status</h3>
       <div class="status-summary">
+        <div class="status-summary-row">
+          <span>Knotenidentität</span>
+          <span class={`status-pill ${identityClass}`}>{identityText}</span>
+        </div>
         <div class="status-summary-row">
           <span>Mesh</span>
           <span class={`status-pill ${meshClass}`}>{meshText}</span>
@@ -300,6 +318,19 @@ function StatusPanel({ meshStatus }: { meshStatus: MeshStatusPayload | null }) {
             <span class={`status-pill ${gatewayClass}`}>{gatewayText}</span>
           </div>
         </div>
+      </div>
+      <div aria-live="polite">
+        {registrationMode === 'temporary' ? (
+          <p class="identity-warning">
+            <strong>Temporäre Node-ID: {safe(nodeId)}</strong><br />
+            Dieser Knoten ist noch nicht registriert und verwendet eine temporäre Identität.
+            Für eine dauerhafte Node-ID ist eine Registrierung erforderlich.
+          </p>
+        ) : registrationMode === 'registered' ? (
+          <p class="identity-note">Dieser Knoten verwendet eine registrierte Identität.</p>
+        ) : (
+          <p class="identity-note">Der Registrierungsmodus wird nicht gemeldet (z. B. bei älteren Versionen).</p>
+        )}
       </div>
     </section>
   );
@@ -810,7 +841,7 @@ export function App() {
                   <strong>{connectedBackbones} / {backbonePeers.length}</strong>
                 </article>
                 <article class="card">
-                  <h3>Links</h3>
+                  <h3>Direkte Nachbarn</h3>
                   <strong>{(bmxd.links || []).length}</strong>
                 </article>
                 <article class="card">
@@ -824,7 +855,11 @@ export function App() {
               </section>
 
               <section class="status-layout">
-                <StatusPanel meshStatus={meshStatus} />
+                <StatusPanel
+                  meshStatus={meshStatus}
+                  registrationMode={common.registration_mode ?? nodes?.node?.registration_mode}
+                  nodeId={common.node}
+                />
 
                 <section class="panel panel-status">
                   <h3>Info</h3>
@@ -877,10 +912,10 @@ export function App() {
               </section>
 
               <NodeTable
-                title="Links"
+                title="Direkte Nachbarn"
                 rows={bmxd.links || []}
                 filter={nodeFilter}
-                emptyText="Keine passenden Links"
+                emptyText="Keine passenden direkten Nachbarn"
                 columns={[
                   { key: 'node', label: 'Node' },
                   { key: 'ip', label: 'IP' },
@@ -896,21 +931,25 @@ export function App() {
                 rows={bmxd.gateways?.gateways || []}
                 filter={nodeFilter}
                 emptyText="Keine passenden Gateways"
-                rowClassName={(row) => (row.ip === bmxd.gateways?.selected ? 'row-active' : '')}
                 renderCell={(row, column) => {
-                  if (column === 'ip' && row.ip === bmxd.gateways?.selected) {
-                    return `${safe(row.ip)} (aktiv)`;
+                  const flags = gatewayIndicators(row, bmxd.gateways || {});
+                  if (column === 'preferred' || column === 'selected') {
+                    const enabled = column === 'preferred' ? flags.preferred : flags.active;
+                    const label = column === 'preferred' ? 'Bevorzugt' : 'Aktiv';
+                    return (
+                      <span
+                        class={`gateway-indicator ${enabled ? (column === 'preferred' ? 'is-preferred' : 'is-active') : 'is-unset'}`}
+                        role="img"
+                        aria-label={enabled ? label : `Nicht ${label.toLowerCase()}`}
+                        title={enabled ? label : `Nicht ${label.toLowerCase()}`}
+                      >
+                        {enabled ? (column === 'preferred' ? '★' : '●') : '—'}
+                      </span>
+                    );
                   }
                   return safe(row[column]);
                 }}
-                columns={[
-                  { key: 'node', label: 'Node' },
-                  { key: 'ip', label: 'IP' },
-                  { key: 'best_next_hop', label: 'Best Next Hop' },
-                  { key: 'speed', label: 'Speed' },
-                  { key: 'usage', label: 'Usage' },
-                  { key: 'brc', label: 'BRC' },
-                ]}
+                columns={GATEWAY_COLUMNS}
               />
 
               <NodeTable
