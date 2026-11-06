@@ -100,7 +100,7 @@ COPY config/ca-root-ffdd.crt /staging/usr/local/share/freifunk/ca-root-ffdd.crt
 COPY config/nginx.conf /staging/etc/nginx/nginx.conf
 
 # Scripts
-COPY scripts/backbone_runtime.py scripts/mesh-status.py scripts/node_config.py scripts/registration_tls.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /staging/usr/local/bin/
+COPY scripts/backbone_runtime.py scripts/mesh-status.py scripts/node_config.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /staging/usr/local/bin/
 COPY scripts/fastd-backbone-cmd.sh /staging/usr/lib/fastd/backbone-cmd.sh
 COPY scripts/bmxd-launcher.sh /staging/usr/local/bin/bmxd-launcher.sh
 COPY scripts/bmxd-gateway.py /staging/usr/lib/bmxd/bmxd-gateway.py
@@ -128,7 +128,7 @@ RUN chmod +x \
 FROM staging AS tests
 
 RUN apk add --no-cache py3-yaml python3
-COPY scripts/backbone_runtime.py scripts/bmxd-gateway.py scripts/mesh-status.py scripts/node_config.py scripts/registration_tls.py scripts/registrar.py scripts/run_gateway_script.py scripts/sysinfo.py scripts/wireguard_status.py /opt/freifunk-tests/scripts/
+COPY scripts/backbone_runtime.py scripts/bmxd-gateway.py scripts/mesh-status.py scripts/node_config.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/run_gateway_script.py scripts/sysinfo.py scripts/wireguard_status.py /opt/freifunk-tests/scripts/
 COPY tests/ /opt/freifunk-tests/tests/
 COPY config/ca-root-ffdd.crt /opt/freifunk-tests/config/ca-root-ffdd.crt
 COPY scripts/fastd-backbone-cmd.sh /opt/freifunk-tests/scripts/fastd-backbone-cmd.sh
@@ -145,6 +145,7 @@ RUN apk add --no-cache \
     bash \
     bridge-utils \
     iproute2 \
+    iptables \
     iputils \
     json-c \
     libcap \

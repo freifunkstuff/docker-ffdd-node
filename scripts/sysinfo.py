@@ -12,7 +12,9 @@ from datetime import datetime
 from pathlib import Path
 
 from backbone_runtime import LivePeer, build_backbone_payload
+from node_identity import effective_node_id, registration_mode
 from node_config import (
+    IDENTITY_CONFIG_SCHEMA,
     build_base_config,
     format_issues,
     load_defaults,
@@ -40,6 +42,7 @@ COMMUNITY_DEFAULT_DOMAINS = {
 }
 
 SYSINFO_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
+    *IDENTITY_CONFIG_SCHEMA,
     {
         "env": "NODE_CONTACT_EMAIL",
         "path": ("node", "contact", "email"),
@@ -210,6 +213,7 @@ def render_stub_payload(config: dict, state: dict, nodes_payload: dict | None = 
                 "community": config["node"]["community"],
                 "group_id": str(config["node"]["common"]["group_id"]),
                 "node": node_meta["node"],
+                "registration_mode": registration_mode(config),
                 "domain": str(config["node"]["common"]["domain"]),
                 "ip": node_meta["ip"],
                 "network_id": str(config["node"]["common"]["network_id"]),
@@ -236,6 +240,7 @@ def build_nodes_payload(config: dict, state: dict) -> dict:
         "node": {
             "community": config["node"]["community"],
             "id": node_meta["node"],
+            "registration_mode": registration_mode(config),
             "ip": node_meta["ip"],
             "domain": str(config["node"]["common"]["domain"]),
             "network_id": str(config["node"]["common"]["network_id"]),
@@ -246,7 +251,7 @@ def build_nodes_payload(config: dict, state: dict) -> dict:
 
 def _build_node_meta(config: dict, state: dict) -> dict[str, str]:
     addresses = node_addresses(0)
-    node_id = state.get("registration", {}).get("node_id")
+    node_id = effective_node_id(config, state)
     node_id_text = ""
     primary_ip = ""
 

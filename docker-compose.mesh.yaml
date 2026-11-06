@@ -1,0 +1,27 @@
+# Optional L2 mesh attachment. Runtime owns VLAN/macvlan creation, Node owns L3.
+# Usage: docker compose -f docker-compose.yaml -f docker-compose.mesh.yaml up -d --build
+# Requires a recent Docker Engine/Compose with enable_ipv4 and interface_name.
+services:
+  dockernode:
+    # Docker owns this read-only sysctl; Node installs its firewall before mesh L3 setup.
+    sysctls:
+      net.ipv4.ip_forward: "1"
+      net.ipv6.conf.all.forwarding: "0"
+    environment:
+      MESH_INTERFACES: mesh0
+    networks:
+      default:
+        gw_priority: 100
+      mesh:
+        interface_name: mesh0
+
+networks:
+  mesh:
+    driver: macvlan
+    driver_opts:
+      parent: ${MESH_PARENT_INTERFACE:?Set MESH_PARENT_INTERFACE to the runtime mesh parent, e.g. enp6s0.1062}
+      macvlan_mode: bridge
+    # No Docker-assigned subnet, address or gateway on the real Freifunk segment.
+    # The Node derives and configures its FFDD mesh address itself.
+    enable_ipv4: false
+    enable_ipv6: false

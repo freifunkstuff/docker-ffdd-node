@@ -201,6 +201,163 @@ Flüchtige Laufzeitdaten liegen im Container unter:
 - `/run/freifunk/sysinfo`
 - `/run/freifunk/www`
 
+## Temporärer Betrieb und reine Mesh-Nodes
+
+`NODE_REGISTRATION_MODE=registered` bleibt der Default. Mit
+`NODE_REGISTRATION_MODE=temporary` wird ohne Registry-Anfragen eine temporäre
+FFDD-ID von 900 bis 999 verwendet. Die Firmware-Formel bleibt erhalten:
+`900 + ((ganze Uptime-Sekunden + erste sechs Nichtnull-Ziffern des MD5 von ip addr) % 100)`.
+Die Uptime wird an Container angepasst: Host-Uptime minus Startzeit von Container-
+PID 1. Das Ergebnis liegt separat unter `temporary.node_id` im persistenten
+Zustand und wird beim Neustart wiederverwendet. Eine vorhandene reguläre
+Registrierung wird nicht überschrieben.
+Der kleine Bereich ist nicht global reserviert und kann kollidieren. Ein Wechsel
+auf registrierten Betrieb erfolgt ausdrücklich über Modusänderung und Neustart.
+
+`BACKBONE_ENABLED=0` deaktiviert alle WireGuard-/fastd-Backbone-Verbindungen,
+Peer-API-Abfragen und deren Konfigurationsanforderungen. Die Node kann dann
+allein über `MESH_INTERFACES` teilnehmen. Leere Peer-Strings allein reichen dafür
+nicht, weil sie ansonsten die Image-Defaults verwenden.
+
+## Vorhandene Mesh-Interfaces und lokaler VLAN-Test
+
+`MESH_INTERFACES` ist eine durch Leerzeichen getrennte Liste bereits im Container
+vorhandener Mesh-Interfaces. Die Node erstellt keine VLANs oder externen Bridges.
+Sie setzt FFDD-Mesh-Adresse, `/16`, Broadcast `10.255.255.255`, MTU 1200 und
+bindet die Interfaces mit `/linklayer 1` in bmxd ein. Der Registrar kontrolliert
+sie zwischen den Registrierungen alle fünf Sekunden auf Verfügbarkeit und
+repariert entfernte/wiederkehrende Interfaces. Der Status steht unter
+`/run/freifunk/bmxd/mesh-interfaces.json`.
+
+Die normale Default-Route bleibt Internet-Uplink für eigenen Verkehr. Interfaces
+mit einer Default-Route werden nicht als Mesh-Anschluss akzeptiert. Eine eigene
+Forwarding-Chain erlaubt Transit ausschließlich zwischen Mesh- und
+Backbone-Interfaces; die gewöhnliche Uplink-Schnittstelle ist kein Exit. Es
+werden keine globalen Firewall-Chains geleert. Mesh-Deployments benötigen eine
+**eigene Netzwerk-Namespace**, nicht `network_mode: host`, sowie `NET_ADMIN` und
+vom Runtime gesetztes `net.ipv4.ip_forward=1`. Docker stellt `/proc/sys` innerhalb
+des Containers schreibgeschützt bereit; dies wird daher über Compose gesetzt,
+nicht durch zusätzliche Privilegien oder Host-Sysctl-Änderungen umgangen. Der
+Entrypoint nimmt die bereitgestellten Mesh-Links zunächst herunter, installiert
+die Schutzregeln und lässt erst dann die Mesh-L3-Konfiguration starten.
+Fehlgeschlagene Schutzregeln verhindern den Start.
+
+INPUT/OUTPUT-Regeln trennen zusätzlich die Node-Adressen: Aus dem Mesh sind nur
+Mesh-Protokoll, ICMP-Diagnose und HTTP auf den FFDD-Adressen erlaubt. Die
+Docker-/Uplink-Adresse und andere lokale Dienste sind von dort nicht erreichbar.
+Die Web-UI bleibt auf Port 80 über den Mesh-Anschluss und über den normalen
+Docker-/Managementanschluss verfügbar. Fehlgeroutete lokale Pakete in private
+Netze über Mesh und Pakete mit Mesh-Quelladresse über den Uplink werden gesperrt.
+IPv6-Mesh ist noch nicht unterstützt und wird explizit gesperrt. Diese Variante
+bietet weder Client-DHCP noch eine neue Internet-Ausleitung an.
+
+Für ein lokal bereits bis zum PC transportiertes VLAN liegt ein Compose-Override
+bei. Beispiel für VLAN 1062 an Host-Interface `enp6s0`:
+
+```dotenv
+MESH_PARENT_INTERFACE=enp6s0.1062
+HTTP_BIND_ADDRESS=127.0.0.1
+HTTP_PORT=8080
+```
+
+```sh
+docker compose -f docker-compose.yaml -f docker-compose.mesh.yaml config --quiet
+docker compose -f docker-compose.yaml -f docker-compose.mesh.yaml up -d --build
+```
+
+Der Docker-macvlan-Treiber stellt daraus das Container-Interface `mesh0` bereit;
+das normale Bridge-Netz hat weiterhin Vorrang für die Default-Route. Docker
+vergibt auf dem macvlan weder IP-Adresse noch Default-Gateway. Die Node leitet
+ihre Mesh-Adresse aus ihrer persistenten registrierten Identität ab. Die
+Knotennummer/Identität muss vor dem Anschluss an ein vorhandenes Mesh passen;
+keine fremde Nummer verwenden und nicht dieselbe Identität gleichzeitig auf
+mehreren Nodes betreiben.
+
+Die Variante benötigt einen aktuellen Docker Engine/Compose mit `enable_ipv4`,
+`interface_name` und `gw_priority`. Docker kann die Trunk-Subschnittstelle
+`enp6s0.1062` automatisch erstellen. Der Switchport muss VLAN 1062 getaggt zum PC
+transportieren. Host und macvlan-Container können auf dem macvlan standardmäßig
+nicht direkt miteinander sprechen; die lokale UI ist stattdessen über
+`http://127.0.0.1:8080/` erreichbar. Der physische Host-Uplink und seine
+Default-Route werden nicht durch die Node umkonfiguriert.
+
+## Optionaler LAN-/Uplink-Zugriff auf FFDD
+
+Standardmäßig bleibt `LAN_MESH_ACCESS_ENABLED=false`: Der normale Uplink ist
+kein Mesh-Clientanschluss und kein Internet-Exit. Die gezielte Freigabe wird
+explizit aktiviert, zum Beispiel:
+
+```dotenv
+LAN_MESH_ACCESS_ENABLED=true
+LAN_MESH_ACCESS_SOURCES=192.168.10.0/24 192.168.20.5/32
+```
+
+`LAN_MESH_ACCESS_SOURCES` ist bei aktivierter Funktion zwingend erforderlich:
+eine durch Leerzeichen getrennte Liste explizit vertrauenswürdiger, kanonischer
+IPv4-CIDRs (Netzadresse mit Präfix, einzelne Hosts mit `/32`). Die Quellen müssen
+den am Container tatsächlich sichtbaren Quelladressen entsprechen. Docker-NAT
+kann diese verändern; nicht vorsorglich größere Netze freigeben. Auch öffentliche
+Unicast-Netze können ausdrücklich vertraut werden; RFC1918 ist keine Voraussetzung.
+Die Eingangs-Schnittstelle wird automatisch über die IPv4-Default-Route der
+MAIN-Routingtabelle bestimmt, nicht über einen fest verdrahteten Namen wie `eth0`.
+
+Das einzige Zielnetz ist fest `10.200.0.0/16` und nicht konfigurierbar. Der Zugriff
+verwendet die primäre FFDD-Adresse dieser Node als SNAT-Quelle, damit Rückverkehr
+ohne Bekanntmachung der LAN-Netze im Mesh funktioniert. Dies ist keine Freigabe
+für Internet-Ausleitung, allgemeinen Uplink-Transit oder neue Mesh-Initiierungen
+ins LAN. LAN-Clients bzw. deren Router benötigen eine Route für `10.200.0.0/16`
+über den erreichbaren Container-Uplink; die Node ändert keine Host-/LAN-Routen.
+Die normalen Mesh-/Uplink-Schutzregeln bleiben für sonstigen Verkehr bestehen.
+Nur am Uplink ursprünglich eingegangene erlaubte Verbindungen werden per
+Conntrack-Markierung autorisiert. SNAT und die Rückrichtung verlangen diese
+Markierung; eine aus dem Mesh gefälschte LAN-Quelladresse allein reicht nicht.
+Die Freigabe für Antworten ist auf REPLY und ESTABLISHED/RELATED begrenzt.
+Auch Antworten des lokalen Webservers auf seine eigene Mesh-Adresse sind damit
+vom LAN aus möglich, ohne allgemeine Mesh-Quelladressen zum Uplink durchzulassen.
+
+Explizite isolierte Pakettests (keine echten Netze, keine Registry):
+
+```sh
+python3 tests/integration_mesh_isolation.py ffdd-node:local-mesh
+python3 tests/integration_lan_mesh_access.py ffdd-node:local-mesh
+```
+
+Der LAN-Test prüft Default aus, aktiviertes SNAT ohne LAN-Rückroute auf der
+Gegenstelle, nicht erlaubte Quellen/Ziele, Mesh→LAN-Sperre, gefälschte LAN-Quellen
+aus dem Mesh und erneutes Deaktivieren. Er verwendet vorab erfolgreiche
+Positivkontrollen, damit bloß fehlende Routen nicht als Firewall-Erfolg zählen.
+
+Ungültige CIDRs, Hostbits in Netzpräfixen, IPv6, `0.0.0.0/0`, Loopback,
+Link-local, Multicast und reservierte/Broadcast-Bereiche werden abgewiesen.
+Auch jede Überlappung mit FFDD `10.200.0.0/15` oder dem Transportnetz
+`10.203.0.0/16` ist verboten, einschließlich größerer umschließender Präfixe:
+LAN-Vertrauen darf kein Spoofing von Mesh-Quelladressen ermöglichen. Nichtleere
+Quelllisten werden auch bei deaktivierter Funktion validiert. Ein Quellpräfix
+ist eine Vertrauensentscheidung des Betreibers, kein Authentizitätsnachweis;
+es sollte so klein wie möglich sein. Es gibt weder Client-DHCP noch eine neue
+Internet-Gateway-Ankündigung.
+
+## Gateway-Präferenz
+
+`BMXD_PREFERRED_GATEWAY=10.200.200.21` übergibt die primäre Mesh-IP als bmxd-
+Präferenz (`-p`). Ein geeignetes erreichbares bevorzugtes Gateway gewinnt gegen
+bessere Alternativen; fehlt es oder zieht sein Gateway-Angebot zurück, kann bmxd
+auf ein anderes Gateway ausweichen.
+
+`BMXD_ONLY_COMMUNITY_GATEWAYS=true` (Default) wählt nur Gateway-Ankündigungen mit
+dem bmxd-Merkmal `COMMUNITY_GATEWAY`. Mit `false` werden auch andere angebotene
+Exits berücksichtigt. Die Einstellung akzeptiert auch `1`/`0`; ungültige Werte
+werden beim Konfigurationscheck abgewiesen. Intern wird bmxd `1` bzw. `0` übergeben.
+Das Merkmal kennzeichnet die im Protokoll für Community-übergreifende
+Default-Ausleitung vorgesehenen Gateways. Es ist kein
+Filter nach `NODE_COMMUNITY` und kein Authentizitäts-/Vertrauensnachweis. Ein
+gewöhnlicher Router kann Internet anbieten, ohne dieses Merkmal zu setzen;
+solche Kandidaten bleiben im Gateway-Verzeichnis sichtbar, werden mit diesem
+Filter aber nicht ausgewählt. Die Präferenz überstimmt diesen Filter nicht.
+
+Eine Auswahl allein schaltet weder die eigene Uplink-Freigabe noch eine
+Client-Ausleitung ein. Die tatsächliche Exit-Funktion bleibt separat abzusichern.
+
 ## Wichtige Endpunkte
 
 - `GET /sysinfo.json`

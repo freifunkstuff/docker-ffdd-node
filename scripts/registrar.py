@@ -22,6 +22,9 @@ if str(PROJECT_DIR) not in sys.path:
 
 from node_config import (  # noqa: E402
     REGISTRATION_TLS_CONFIG_SCHEMA,
+    IDENTITY_CONFIG_SCHEMA,
+    BACKBONE_CONFIG_SCHEMA,
+    MESH_CONFIG_SCHEMA,
     build_base_config,
     load_state,
     node_addresses,
@@ -29,7 +32,12 @@ from node_config import (  # noqa: E402
     save_state,
 )
 
+from node_identity import registration_mode, effective_node_id, ensure_temporary_node_id
+
 from registration_tls import build_registration_ssl_context  # noqa: E402
+from mesh_interfaces import MeshResult, ensure_mesh_interfaces, parse_mesh_interfaces  # noqa: E402
+from mesh_firewall import apply_mesh_forwarding_guard  # noqa: E402
+from lan_mesh_access import LAN_MESH_ACCESS_CONFIG_SCHEMA, allowed_sources  # noqa: E402
 
 
 FASTD_RUNTIME_DIR = Path(os.environ.get("FASTD_RUNTIME_DIR", "/run/freifunk/fastd"))
@@ -53,6 +61,10 @@ WIREGUARD_KEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 
 REGISTRAR_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
     *REGISTRATION_TLS_CONFIG_SCHEMA,
+    *IDENTITY_CONFIG_SCHEMA,
+    *BACKBONE_CONFIG_SCHEMA,
+    *MESH_CONFIG_SCHEMA,
+    *LAN_MESH_ACCESS_CONFIG_SCHEMA,
     {
         "env": "REGISTRAR_INTERVAL",
         "path": ("registrar", "interval"),
@@ -107,6 +119,14 @@ REGISTRAR_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
         "blank_env_uses_default": True,
     },
     {
+        "env": "BMXD_ONLY_COMMUNITY_GATEWAYS",
+        "default_key": "BMXD_ONLY_COMMUNITY_GATEWAYS",
+        "path": ("bmxd", "only_community_gw"),
+        "type": "bool",
+        "default": True,
+        "blank_env_uses_default": True,
+    },
+    {
         "env": "BMXD_PREFERRED_GATEWAY",
         "path": ("bmxd", "preferred_gateway"),
         "type": "str",
@@ -148,8 +168,21 @@ def require_valid_registrar_config(
     base_values: dict | None = None,
     logger=None,
 ) -> dict:
+    # Resolve switches first so unused Registry and backbone settings are not required.
+    switches = require_valid_node_config(
+        schema=(*IDENTITY_CONFIG_SCHEMA, *BACKBONE_CONFIG_SCHEMA),
+        defaults=defaults, env=env, logger=logger,
+        base_values=build_base_config() if base_values is None else base_values,
+    )
+    temporary = registration_mode(switches) == "temporary"
+    backbone_enabled = switches["backbone"]["enabled"]
+    excluded = set()
+    if temporary:
+        excluded.update({"NODE_REGISTRATION_URL", "NODE_REGISTRATION_CA_FILE", "INITIAL_NODE_ID"})
+    if not backbone_enabled:
+        excluded.add("BACKBONE_PEERS")
     config = require_valid_node_config(
-        schema=REGISTRAR_CONFIG_SCHEMA,
+        schema=tuple(spec for spec in REGISTRAR_CONFIG_SCHEMA if spec["env"] not in excluded),
         defaults=defaults,
         env=env,
         logger=logger,
@@ -158,34 +191,44 @@ def require_valid_registrar_config(
 
     issues: list[str] = []
     try:
-        build_registration_ssl_context(config)
+        allowed_sources(config)
     except ValueError as exc:
         issues.append(str(exc))
-    registration_url = str(config["registrar"]["registration_url"])
-    if REGISTER_KEY_PLACEHOLDER not in registration_url or NODE_ID_PLACEHOLDER not in registration_url:
-        issues.append(
-            f"NODE_REGISTRATION_URL: NODE_REGISTRATION_URL must contain {REGISTER_KEY_PLACEHOLDER} and {NODE_ID_PLACEHOLDER}"
-        )
+    try:
+        configured_mesh_interfaces(config)
+    except ValueError as exc:
+        issues.append(str(exc))
+    if not temporary:
+        try:
+            build_registration_ssl_context(config)
+        except ValueError as exc:
+            issues.append(str(exc))
+        registration_url = str(config["registrar"]["registration_url"])
+        if REGISTER_KEY_PLACEHOLDER not in registration_url or NODE_ID_PLACEHOLDER not in registration_url:
+            issues.append(
+                f"NODE_REGISTRATION_URL: NODE_REGISTRATION_URL must contain {REGISTER_KEY_PLACEHOLDER} and {NODE_ID_PLACEHOLDER}"
+            )
 
-    _source, peer_string = requested_peer_string(config, env=env)
-    parsed_peers, parse_issues = parse_peer_string(peer_string)
-    usable_peers, peer_issues = validate_requested_peers(parsed_peers)
+    if backbone_enabled:
+        _source, peer_string = requested_peer_string(config, env=env)
+        parsed_peers, parse_issues = parse_peer_string(peer_string)
+        usable_peers, peer_issues = validate_requested_peers(parsed_peers)
 
-    for issue in parse_issues:
-        if logger is not None:
-            logger(f"config warning: {issue}")
-    if any(peer["type"] == "wireguard" for peer in usable_peers):
-        wireguard_probe_error = probe_wireguard_support()
-        if wireguard_probe_error is not None:
-            issues.append(f"WIREGUARD_BACKBONE: {wireguard_probe_error}")
-
-    if not usable_peers:
-        for issue in peer_issues:
+        for issue in parse_issues:
             if logger is not None:
-                logger(f"config error: {issue}")
-        issues.append(
-            "BACKBONE_PEERS: no usable backbone peers remain after validation; expected at least one valid fastd or wireguard peer"
-        )
+                logger(f"config warning: {issue}")
+        if any(peer["type"] == "wireguard" for peer in usable_peers):
+            wireguard_probe_error = probe_wireguard_support()
+            if wireguard_probe_error is not None:
+                issues.append(f"WIREGUARD_BACKBONE: {wireguard_probe_error}")
+
+        if not usable_peers:
+            for issue in peer_issues:
+                if logger is not None:
+                    logger(f"config error: {issue}")
+            issues.append(
+                "BACKBONE_PEERS: no usable backbone peers remain after validation; expected at least one valid fastd or wireguard peer"
+            )
 
     if issues:
         for issue in issues:
@@ -904,6 +947,66 @@ def reconcile_wireguard_runtime(
     return needs_sync, desired_ifaces
 
 
+def configured_mesh_interfaces(config: dict, backbone_interfaces=()) -> list[str]:
+    return parse_mesh_interfaces(
+        str(config.get("mesh", {}).get("interfaces", "")),
+        primary_interface=config["bmxd"]["primary_interface"],
+        backbone_interfaces=[config["fastd"]["interface"], *backbone_interfaces],
+        wireguard_interface=WIREGUARD_INTERFACE,
+        wireguard_prefix=WIREGUARD_TUNNEL_PREFIX,
+    )
+
+
+def reconcile_external_mesh(config: dict, node_id: int, backbone_interfaces: list[str]):
+    names = configured_mesh_interfaces(config, backbone_interfaces)
+    sources = allowed_sources(config)
+    guard_options = {"lan_sources": sources, "node_ip": node_addresses(node_id)["primary_ip"]} if sources else {}
+    if not names:
+        if sources:
+            apply_mesh_forwarding_guard([], **guard_options)
+        return None
+    path = BMXD_RUNTIME_DIR / "mesh-interfaces.json"
+    previous = {}
+    if path.exists():
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8")).get("interfaces", {})
+        except (ValueError, OSError):
+            pass
+    try:
+        # Fail closed before making an external link usable for mesh traffic.
+        apply_mesh_forwarding_guard(names, **guard_options)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        status = f"waiting: forwarding guard failed: {exc}"
+        waiting = {name: {**previous.get(name, {}), "status": status} for name in names}
+        result = MeshResult(False, waiting != previous, waiting)
+        if result.changed:
+            log_info(status)
+    else:
+        result = ensure_mesh_interfaces(
+            names, node_id, primary_interface=config["bmxd"]["primary_interface"],
+            backbone_interfaces=backbone_interfaces, previous=previous, logger=log_info,
+        )
+    if result.changed or not result.ready:
+        (BMXD_RUNTIME_DIR / "service-applied.sha256").unlink(missing_ok=True)
+    write_text_atomic(path, json.dumps({"node_id": node_id, "backbone_interfaces": backbone_interfaces,
+                                       "interfaces": result.state}, sort_keys=True) + "\n")
+    return result
+
+
+def poll_external_mesh(config: dict) -> None:
+    """Repair hot-plugged links independently of the hourly registration request."""
+    if not configured_mesh_interfaces(config):
+        return
+    path = BMXD_RUNTIME_DIR / "mesh-interfaces.json"
+    if not path.exists():
+        return
+    context = json.loads(path.read_text(encoding="utf-8"))
+    result = reconcile_external_mesh(config, context["node_id"], context["backbone_interfaces"])
+    if result is not None and result.ready:
+        reconcile_service("bmxd", [BMXD_ENV_FILE, WIREGUARD_ENV_FILE],
+                          BMXD_RUNTIME_DIR / "service-applied.sha256")
+
+
 def render_bmxd_runtime(config: dict, assigned_node_id: int, backbone_interfaces: list[str] | None = None) -> bool:
     addresses = node_addresses(assigned_node_id)
     bmxd_config = config["bmxd"]
@@ -918,12 +1021,13 @@ def render_bmxd_runtime(config: dict, assigned_node_id: int, backbone_interfaces
             f'BMXD_PRIMARY_INTERFACE="{bmxd_config["primary_interface"]}"',
             f'BMXD_FASTD_INTERFACE="{config["fastd"]["interface"]}"',
             f'BMXD_BACKBONE_INTERFACES="{" ".join(interfaces)}"',
+            f'BMXD_MESH_INTERFACES="{" ".join(configured_mesh_interfaces(config, interfaces))}"',
             f'BMXD_MESH_NETWORK="{bmxd_config["mesh_network"] or addresses["mesh_network"]}"',
             f'BMXD_POLICY_RULE_TO="{bmxd_config["policy_rule_to"]}"',
             f'BMXD_POLICY_RULE_PRIORITY="{bmxd_config["policy_rule_priority"]}"',
             f'BMXD_POLICY_RULE_TABLE="{bmxd_config["policy_rule_table"]}"',
             f'BMXD_NETID="{bmxd_config["netid"]}"',
-            f'BMXD_ONLY_COMMUNITY_GW="{bmxd_config["only_community_gw"]}"',
+            f'BMXD_ONLY_COMMUNITY_GW="{int(bool(bmxd_config["only_community_gw"]))}"',
             f'BMXD_ROUTING_CLASS="{bmxd_config["routing_class"]}"',
             f'BMXD_PREFERRED_GATEWAY="{preferred_gateway}"',
             f'BMXD_GATEWAY_HYSTERESIS="{bmxd_config["gateway_hysteresis"]}"',
@@ -970,6 +1074,8 @@ class RegistrationRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def register_once(config: dict, state: dict) -> tuple[int, str]:
+    if registration_mode(config) == "temporary":
+        return ensure_temporary_node_id(state), ""
     register_key = ensure_register_key(state)
     node_id = ensure_node_id(state, int(config["registrar"]["initial_node_id"]))
     url = build_registration_url(config, register_key, node_id)
@@ -1043,29 +1149,32 @@ def run_iteration(
 ) -> tuple[int, bool, bool]:
     config = config_override if config_override is not None else require_valid_registrar_config(logger=log_info)
     state = load_state()
-    previous_node_id = state.get("registration", {}).get("node_id")
+    previous_node_id = effective_node_id(config, state)
     fastd_secret, fastd_secret_created = ensure_secret(state)
     wireguard_secret, wireguard_secret_created = ensure_wireguard_secret(state)
-    ensure_register_key(state)
-    requested_node_id = ensure_node_id(state, int(config["registrar"]["initial_node_id"]))
+    if registration_mode(config) == "temporary":
+        requested_node_id = ensure_temporary_node_id(state)
+    else:
+        ensure_register_key(state)
+        requested_node_id = ensure_node_id(state, int(config["registrar"]["initial_node_id"]))
     save_state(state)
 
     assigned_node_id, _registration_url = register_once(config, state)
     save_state(state)
 
-    _source, peer_string = requested_peer_string(config)
-    parsed_peers, parse_issues = parse_peer_string(peer_string)
-    for issue in parse_issues:
-        log_info(issue)
-
-    candidate_peers, peer_issues = validate_requested_peers(parsed_peers)
-    for issue in peer_issues:
-        log_info(issue)
-
     wireguard_public = derive_wireguard_public_key(wireguard_secret)
-    peers = resolve_requested_peers(candidate_peers, assigned_node_id, wireguard_public, logger=log_info)
-    if not peers:
-        raise SystemExit("no usable backbone peers remain after validation and wireguard peer resolution")
+    peers = []
+    if config.get("backbone", {}).get("enabled", 1):
+        _source, peer_string = requested_peer_string(config)
+        parsed_peers, parse_issues = parse_peer_string(peer_string)
+        for issue in parse_issues:
+            log_info(issue)
+        candidate_peers, peer_issues = validate_requested_peers(parsed_peers)
+        for issue in peer_issues:
+            log_info(issue)
+        peers = resolve_requested_peers(candidate_peers, assigned_node_id, wireguard_public, logger=log_info)
+        if not peers:
+            raise SystemExit("no usable backbone peers remain after validation and wireguard peer resolution")
 
     fastd_peers = [peer for peer in peers if peer["type"] == "fastd"]
     wireguard_peers = [peer for peer in peers if peer["type"] == "wireguard"]
@@ -1084,6 +1193,7 @@ def run_iteration(
         backbone_interfaces.append(config["fastd"]["interface"])
     backbone_interfaces.extend(wireguard_ifaces)
 
+    mesh_result = reconcile_external_mesh(config, assigned_node_id, backbone_interfaces)
     bmxd_changed = render_bmxd_runtime(
         config,
         assigned_node_id,
@@ -1096,18 +1206,20 @@ def run_iteration(
             [FASTD_CONFIG, FASTD_ENV_FILE, *PEER_DIR.glob("*.conf")],
             FASTD_RUNTIME_DIR / "service-applied.sha256",
         )
-        reconcile_service(
-            "bmxd",
-            [BMXD_ENV_FILE, WIREGUARD_ENV_FILE],
-            BMXD_RUNTIME_DIR / "service-applied.sha256",
-            force=wireguard_changed or str(previous_node_id) != str(assigned_node_id),
-        )
+        if mesh_result is None or mesh_result.ready:
+            reconcile_service(
+                "bmxd",
+                [BMXD_ENV_FILE, WIREGUARD_ENV_FILE],
+                BMXD_RUNTIME_DIR / "service-applied.sha256",
+                force=wireguard_changed or str(previous_node_id) != str(assigned_node_id),
+            )
 
     addresses = node_addresses(assigned_node_id)
     if fastd_secret_created:
         log_info(f"fastd public key {derive_public_key(fastd_secret)}")
     if wireguard_secret_created:
         log_info(f"wireguard public key {wireguard_public}")
+    log_info(f"registration mode {registration_mode(config)}")
     log_info(f"requested node id {requested_node_id}")
     log_info(f"assigned node id {assigned_node_id}")
     log_info(f"primary ip {addresses['primary_ip']}")
@@ -1148,7 +1260,17 @@ def main() -> int:
         run_iteration(loop_mode=True, first_iteration=first_iteration, config_override=initial_config if first_iteration else None)
         first_iteration = False
         log_info(f"sleeping {interval}s until next reconcile")
-        time.sleep(interval)
+        if not configured_mesh_interfaces(initial_config):
+            time.sleep(interval)
+        else:
+            # Interface hotplug/readdressing must not wait for another registration.
+            deadline = time.monotonic() + interval
+            while time.monotonic() < deadline:
+                time.sleep(min(5, max(0, deadline - time.monotonic())))
+                try:
+                    poll_external_mesh(initial_config)
+                except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                    log_info(f"mesh interface reconcile waiting: {exc}")
 
     return 0
 

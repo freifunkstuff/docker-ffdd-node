@@ -23,6 +23,9 @@ if [ "$#" -gt 0 ]; then
     exec "$@"
 fi
 
+# Install isolation before the registrar activates/addresses mesh interfaces.
+# Docker should supply net.ipv4.ip_forward=1 (the container sysctl mount is read-only).
+python3 /usr/local/bin/mesh_firewall.py
 ensure_ip_forward
 
 if [ "${SKIP_FAILFAST:-0}" != "1" ]; then

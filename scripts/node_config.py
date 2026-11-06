@@ -68,6 +68,55 @@ class ConfigResult:
 ConfigSchema = tuple[dict[str, Any], ...]
 
 
+IDENTITY_CONFIG_SCHEMA: ConfigSchema = (
+    {
+        "env": "NODE_REGISTRATION_MODE",
+        "path": ("registrar", "mode"),
+        "type": "str",
+        "default": "registered",
+        "enum": ("temporary", "registered"),
+    },
+)
+
+BACKBONE_CONFIG_SCHEMA: ConfigSchema = (
+    {
+        "env": "BACKBONE_ENABLED",
+        "path": ("backbone", "enabled"),
+        "type": "int",
+        "default": 1,
+        "min": 0,
+        "max": 1,
+    },
+)
+
+MESH_CONFIG_SCHEMA: ConfigSchema = (
+    {
+        "env": "MESH_INTERFACES",
+        "path": ("mesh", "interfaces"),
+        "type": "str",
+        "default": "",
+        "allow_blank": True,
+    },
+)
+
+
+LAN_MESH_ACCESS_CONFIG_SCHEMA: ConfigSchema = (
+    {
+        "env": "LAN_MESH_ACCESS_ENABLED",
+        "path": ("lan_mesh_access", "enabled"),
+        "type": "bool",
+        "default": False,
+    },
+    {
+        "env": "LAN_MESH_ACCESS_SOURCES",
+        "path": ("lan_mesh_access", "sources"),
+        "type": "str",
+        "default": "",
+        "allow_blank": True,
+    },
+)
+
+
 REGISTRATION_TLS_CONFIG_SCHEMA: ConfigSchema = (
     {
         "env": "NODE_REGISTRATION_CA_FILE",
@@ -282,6 +331,15 @@ def _cast_value(raw_value: Any, spec: dict[str, Any]) -> Any:
 
     if value_type == "str":
         return str(raw_value).strip()
+    if value_type == "bool":
+        if isinstance(raw_value, bool):
+            return raw_value
+        text = str(raw_value).strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+        raise ValueError(f"{env_name} must be a boolean (true/false or 1/0)")
     if value_type == "int":
         try:
             return int(str(raw_value).strip())

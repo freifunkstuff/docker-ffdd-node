@@ -11,6 +11,7 @@ wait_for_file() {
 
 wait_for_interface() {
     while ! ip link show "$1" >/dev/null 2>&1; do
+        echo "[bmxd] waiting for interface $1" >&2
         sleep 1
     done
 }
@@ -23,7 +24,7 @@ wait_for_file "$BMXD_ENV_FILE"
 : "${BMXD_DAEMON_RUNTIME_DIR:?missing BMXD_DAEMON_RUNTIME_DIR}"
 : "${BMXD_PRIMARY_INTERFACE:?missing BMXD_PRIMARY_INTERFACE}"
 : "${BMXD_FASTD_INTERFACE:?missing BMXD_FASTD_INTERFACE}"
-: "${BMXD_BACKBONE_INTERFACES:?missing BMXD_BACKBONE_INTERFACES}"
+: "${BMXD_BACKBONE_INTERFACES=}" # Empty is valid for mesh-interface-only nodes.
 : "${BMXD_GATEWAY_SCRIPT:?missing BMXD_GATEWAY_SCRIPT}"
 : "${BMXD_POLICY_RULE_TO:?missing BMXD_POLICY_RULE_TO}"
 : "${BMXD_POLICY_RULE_PRIORITY:?missing BMXD_POLICY_RULE_PRIORITY}"
@@ -41,6 +42,12 @@ ip addr add "$BMXD_PRIMARY_IP/32" dev "$BMXD_PRIMARY_INTERFACE"
 
 for backbone_if in $BMXD_BACKBONE_INTERFACES; do
     wait_for_interface "$backbone_if"
+done
+
+# The registrar addresses these runtime-owned links and monitors hotplug. Never
+# create, bridge, flush, or delete them here.
+for mesh_if in ${BMXD_MESH_INTERFACES:-}; do
+    wait_for_interface "$mesh_if"
 done
 
 while ip rule del pref "$BMXD_POLICY_RULE_PRIORITY" >/dev/null 2>&1; do
@@ -75,6 +82,10 @@ set -- "$@" --dev="$BMXD_PRIMARY_INTERFACE" /linklayer 0
 
 for backbone_if in $BMXD_BACKBONE_INTERFACES; do
     set -- "$@" --dev="$backbone_if" /linklayer 1
+done
+
+for mesh_if in ${BMXD_MESH_INTERFACES:-}; do
+    set -- "$@" --dev="$mesh_if" /linklayer 1
 done
 
 exec bmxd "$@"
