@@ -25,6 +25,7 @@ from node_config import (  # noqa: E402
     IDENTITY_CONFIG_SCHEMA,
     BACKBONE_CONFIG_SCHEMA,
     MESH_CONFIG_SCHEMA,
+    NODE_TYPE_CONFIG_SCHEMA,
     build_base_config,
     load_state,
     node_addresses,
@@ -64,6 +65,7 @@ REGISTRAR_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
     *IDENTITY_CONFIG_SCHEMA,
     *BACKBONE_CONFIG_SCHEMA,
     *MESH_CONFIG_SCHEMA,
+    *NODE_TYPE_CONFIG_SCHEMA,
     *LAN_MESH_ACCESS_CONFIG_SCHEMA,
     {
         "env": "REGISTRAR_INTERVAL",

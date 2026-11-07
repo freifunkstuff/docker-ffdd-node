@@ -219,6 +219,32 @@ Peer-API-Abfragen und deren Konfigurationsanforderungen. Die Node kann dann
 allein über `MESH_INTERFACES` teilnehmen. Leere Peer-Strings allein reichen dafür
 nicht, weil sie ansonsten die Image-Defaults verwenden.
 
+## Rollenmeldung, Modell und Container-Laufzeit
+
+`NODE_TYPE=node` kennzeichnet Router/Offloader gegenüber Karte und Collector.
+`NODE_TYPE=server` bleibt aus Kompatibilitätsgründen der Default für bisherige
+Server-Deployments. Das ist eine Meldung, keine Aktivierung eines Internet-Exits.
+Der Collector behandelt Legacy-Server besonders (Gatewaydarstellung und keine
+Standortmarkierung); ein Offloader mit Koordinaten muss daher ausdrücklich `node`
+melden. Registrierungsmodus und Rolle sind voneinander unabhängig.
+
+Das Gerätemodell ist standardmäßig `docker-alpine`. `SYSINFO_BOARD`,
+`SYSINFO_MODEL` und `SYSINFO_MODEL2` erlauben eine explizite Containerbeschreibung;
+der Collector bevorzugt das nichtleere `model2`. Beispielsweise meldet ein
+Kubernetes-Offloader `FFDD Docker-Node (Kubernetes)`, nicht die alte VM-Hardware.
+CPU-Beschreibung bevorzugt den tatsächlichen CPU-Modelltext; Last und CPU-Anzahl
+bleiben derzeit hostbezogen und sind keine Pod-CPU-Auslastungsmessung.
+
+WireGuard-Datenzähler werden aus den konfigurierten `tbb_wgN`-IPIP-Interfaces
+aggregiert als `tbb_wg_rx/tx` veröffentlicht. Das verschlüsselte Underlay `tbbwg`
+wird nicht zusätzlich gezählt; fastd bleibt separat. Konfigurierte beliebig
+benannte Mesh-Interfaces werden als LAN-Meshlinks klassifiziert.
+
+Der Entrypoint begrenzt Soft-/Hard-`nofile` auf höchstens 65536 und erhält
+strengere Operatorlimits. Das verhindert sehr lange fastd-v23-Startzeiten bei
+modernen Runtime-Defaults von über einer Milliarde Dateideskriptoren; es gilt
+auch für explizite Entrypoint-Kommandos und alle Runit-Kindprozesse.
+
 ## Vorhandene Mesh-Interfaces und lokaler VLAN-Test
 
 `MESH_INTERFACES` ist eine durch Leerzeichen getrennte Liste bereits im Container
@@ -320,6 +346,7 @@ Explizite isolierte Pakettests (keine echten Netze, keine Registry):
 ```sh
 python3 tests/integration_mesh_isolation.py ffdd-node:local-mesh
 python3 tests/integration_lan_mesh_access.py ffdd-node:local-mesh
+python3 tests/integration_runtime_capabilities.py ffdd-node:local-mesh
 ```
 
 Der LAN-Test prüft Default aus, aktiviertes SNAT ohne LAN-Rückroute auf der

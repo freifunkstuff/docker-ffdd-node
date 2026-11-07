@@ -78,6 +78,19 @@ IDENTITY_CONFIG_SCHEMA: ConfigSchema = (
     },
 )
 
+NODE_TYPE_CONFIG_SCHEMA: ConfigSchema = (
+    {
+        "env": "NODE_TYPE",
+        "default_key": "NODE_TYPE",
+        "path": ("system", "node_type"),
+        "type": "str",
+        "default": "server",
+        "required": True,
+        "enum": ("node", "server"),
+        "allow_blank": False,
+    },
+)
+
 BACKBONE_CONFIG_SCHEMA: ConfigSchema = (
     {
         "env": "BACKBONE_ENABLED",

@@ -11,10 +11,14 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from backbone_runtime import LivePeer, build_backbone_payload
+from backbone_runtime import (
+    LivePeer, WIREGUARD_ENV_FILE, build_backbone_payload,
+    load_runtime_env, parse_configured_peers,
+)
 from node_identity import effective_node_id, registration_mode
 from node_config import (
     IDENTITY_CONFIG_SCHEMA,
+    NODE_TYPE_CONFIG_SCHEMA,
     build_base_config,
     format_issues,
     load_defaults,
@@ -43,6 +47,7 @@ COMMUNITY_DEFAULT_DOMAINS = {
 
 SYSINFO_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
     *IDENTITY_CONFIG_SCHEMA,
+    *NODE_TYPE_CONFIG_SCHEMA,
     {
         "env": "NODE_CONTACT_EMAIL",
         "path": ("node", "contact", "email"),
@@ -220,6 +225,7 @@ def render_stub_payload(config: dict, state: dict, nodes_payload: dict | None = 
             },
             "backbone": {
                 "fastd_pubkey": _derive_fastd_pubkey(state),
+                "wg_pubkey": _wireguard_pubkey(state),
             },
             "gps": config["node"]["gps"],
             "contact": config["node"]["contact"],
@@ -499,6 +505,15 @@ def _parse_bmxd_originators(raw: str) -> list[dict[str, str]]:
     return originators
 
 
+def _wireguard_pubkey(state: dict) -> str:
+    # Never derive or expose a private key here; registrar publishes the public
+    # key in its runtime env even when persistent state contains only a secret.
+    public_key = state.get("wireguard", {}).get("public_key")
+    if not public_key:
+        public_key = load_runtime_env(WIREGUARD_ENV_FILE).get("WIREGUARD_PUBLIC_KEY", "")
+    return str(public_key).strip()
+
+
 def _derive_fastd_pubkey(state: dict) -> str:
     secret = state.get("fastd", {}).get("secret")
     if not secret:
@@ -599,15 +614,17 @@ def _read_nameservers() -> list[str]:
 
 def _read_cpuinfo() -> str:
     cpuinfo = _read_text(Path("/proc/cpuinfo"))
+    values: dict[str, str] = {}
     for line in cpuinfo.splitlines():
         if ":" not in line:
             continue
         key, value = line.split(":", 1)
-        key = key.strip().lower()
-        if key in ("model name", "hardware", "system type", "processor"):
-            text = value.strip()
-            if text:
-                return text
+        text = value.strip()
+        if text:
+            values.setdefault(key.strip().lower(), text)
+    for key in ("model name", "hardware", "system type", "processor"):
+        if key in values:
+            return values[key]
     return ""
 
 
@@ -735,6 +752,25 @@ def _read_interface_stats() -> dict[str, str]:
         interfaces[f"{ifname}_rx"] = rx
         interfaces[f"{ifname}_tx"] = tx
 
+    # Count the configured IPIP mesh tunnels, not the encrypted tbbwg
+    # underlay as well. Preserve the legacy aggregate keys for consumers.
+    _, peers = parse_configured_peers(load_runtime_env(WIREGUARD_ENV_FILE))
+    tunnel_names = {peer.ifname for peer in peers.values()
+                    if re.fullmatch(r"tbb_wg\d+", peer.ifname)}
+    wg_rx = wg_tx = 0
+    have_wg = False
+    for ifname in sorted(tunnel_names):
+        base = Path("/sys/class/net") / ifname / "statistics"
+        rx = _parse_int(_read_text(base / "rx_bytes").strip())
+        tx = _parse_int(_read_text(base / "tx_bytes").strip())
+        if rx is None or tx is None or rx < 0 or tx < 0:
+            continue
+        wg_rx += rx
+        wg_tx += tx
+        have_wg = True
+    if have_wg:
+        interfaces["tbb_wg_rx"] = str(wg_rx)
+        interfaces["tbb_wg_tx"] = str(wg_tx)
     return interfaces
 
 
@@ -764,7 +800,11 @@ def _link_type_for_interface(interface: str) -> str:
         "mesh5g-80211s": "wifi_mesh",
         "wifi_adhoc": "wifi_adhoc",
     }
-    return mapping.get(interface, "")
+    if interface in mapping:
+        return mapping[interface]
+    if interface in os.environ.get("MESH_INTERFACES", "").split():
+        return "lan"
+    return ""
 
 
 def _read_text(path: Path) -> str:

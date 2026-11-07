@@ -1,6 +1,25 @@
 #!/bin/sh
 set -eu
 
+# fastd v23 closes descriptors up to RLIMIT_NOFILE before option processing.
+# Modern container runtimes may inherit a billion-descriptor limit, making even
+# --version/--show-key spin for minutes. Bound both limits before any child or
+# custom command, preserving stricter operator-provided limits.
+cap_open_files() {
+    for kind in S H; do
+        current_limit="$(ulimit -"$kind" -n)"
+        case "$current_limit" in
+            unlimited) ulimit -"$kind" -n 65536 ;;
+            *)
+                if [ "$current_limit" -gt 65536 ]; then
+                    ulimit -"$kind" -n 65536
+                fi
+                ;;
+        esac
+    done
+}
+cap_open_files
+
 ensure_ip_forward() {
     current_value="$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || printf '')"
     if [ "$current_value" = "1" ]; then
