@@ -219,6 +219,16 @@ Peer-API-Abfragen und deren Konfigurationsanforderungen. Die Node kann dann
 allein über `MESH_INTERFACES` teilnehmen. Leere Peer-Strings allein reichen dafür
 nicht, weil sie ansonsten die Image-Defaults verwenden.
 
+Für eine Bestandsmigration kann `NODE_EXPECTED_ID` auf die zwingend zu
+übernehmende ID gesetzt werden. Dann verweigert der Registrar sowohl eine
+abweichende persistierte ID als auch eine andere Registry-Zuweisung, bevor sie
+aktiviert oder gespeichert wird. Default `0` erhält automatische Zuweisung;
+mit temporärem Modus ist der Pin nicht kombinierbar. Beim Import alter Firmware
+muss der vollständige Registrierungswert erhalten bleiben: Manche Geräte hängen
+`ddmesh.system.register_key` an ein bereits MAC-präfixiertes
+`credentials.registration.register_service_url` an. Nur der Systemwert allein
+ist dann eine andere Identität. Alle Teile ausschließlich als Secret behandeln.
+
 ## Rollenmeldung, Modell und Container-Laufzeit
 
 `NODE_TYPE=node` kennzeichnet Router/Offloader gegenüber Karte und Collector.

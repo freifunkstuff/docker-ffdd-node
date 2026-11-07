@@ -94,6 +94,13 @@ REGISTRAR_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
         "blank_env_uses_default": True,
     },
     {
+        "env": "NODE_EXPECTED_ID",
+        "path": ("registrar", "expected_node_id"),
+        "type": "int",
+        "default": 0,
+        "min": 0,
+    },
+    {
         "env": "BACKBONE_PEERS",
         "aliases": ("FASTD_PEERS",),
         "default_key": "BACKBONE_PEERS",
@@ -192,6 +199,8 @@ def require_valid_registrar_config(
     )
 
     issues: list[str] = []
+    if temporary and config["registrar"].get("expected_node_id", 0):
+        issues.append("NODE_EXPECTED_ID cannot be combined with temporary registration mode")
     try:
         allowed_sources(config)
     except ValueError as exc:
@@ -1080,6 +1089,9 @@ def register_once(config: dict, state: dict) -> tuple[int, str]:
         return ensure_temporary_node_id(state), ""
     register_key = ensure_register_key(state)
     node_id = ensure_node_id(state, int(config["registrar"]["initial_node_id"]))
+    expected_node_id = int(config["registrar"].get("expected_node_id", 0))
+    if expected_node_id and node_id != expected_node_id:
+        raise SystemExit(f"NODE_EXPECTED_ID: persisted node {node_id} differs from expected {expected_node_id}; refusing registration")
     url = build_registration_url(config, register_key, node_id)
 
     request = urllib.request.Request(url, headers={"User-Agent": "dockernode-registrar/1"})
@@ -1112,6 +1124,10 @@ def register_once(config: dict, state: dict) -> tuple[int, str]:
     except (KeyError, TypeError, ValueError) as exc:
         raise SystemExit("registration response misses valid node id") from exc
 
+    if expected_node_id and assigned_node_id != expected_node_id:
+        # Do not persist or activate an unexpected identity during a migration.
+        # The response/request can contain credentials; log only public IDs.
+        raise SystemExit(f"NODE_EXPECTED_ID: registry assigned {assigned_node_id}, expected {expected_node_id}; refusing activation")
     state.setdefault("registration", {})["node_id"] = assigned_node_id
     return assigned_node_id, build_registration_url(config, register_key, assigned_node_id)
 
