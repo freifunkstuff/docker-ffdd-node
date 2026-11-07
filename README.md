@@ -280,10 +280,32 @@ aggregiert als `tbb_wg_rx/tx` veröffentlicht. Das verschlüsselte Underlay `tbb
 wird nicht zusätzlich gezählt; fastd bleibt separat. Konfigurierte beliebig
 benannte Mesh-Interfaces werden als LAN-Meshlinks klassifiziert.
 
-Der Entrypoint begrenzt Soft-/Hard-`nofile` auf höchstens 65536 und erhält
-strengere Operatorlimits. Das verhindert sehr lange fastd-v23-Startzeiten bei
-modernen Runtime-Defaults von über einer Milliarde Dateideskriptoren; es gilt
-auch für explizite Entrypoint-Kommandos und alle Runit-Kindprozesse.
+fastd v23 enthält einen gezielten Linux-Patch für die Bereinigung vererbter
+Dateideskriptoren: `close_range(3, UINT_MAX, 0)` statt eines Scans aller möglichen
+Nummern. Auf älteren oder eingeschränkten Kerneln werden tatsächlich offene
+Deskriptoren über rohe `/proc/self/fd`-Syscalls geschlossen. Der Fallback benötigt
+keine Speicherallokation und ist auch nach multithreaded `fork()` verwendbar.
+Die bisherigen Aufrufstellen beim Start und vor Shell-Hooks bleiben erhalten;
+0–2 werden unverändert belassen. So erben Hooks keine Daemon-Sockets oder Geräte.
+Wenn eine vollständige Schließung nicht sicher möglich ist, beendet sich der
+betroffene Prozess mit Fehler statt unsicher weiterzulaufen. Nicht-Linux-Code
+bleibt unverändert; das Image ist Linux-basiert.
+
+Der frühere globale `nofile=65536`-Workaround entfällt. Soft-/Hard-Limits bleiben
+unter Kontrolle der Runtime bzw.des Operators. Zusätzlich zu Unit-Tests prüfen
+`tests/integration_fastd_fd_close.py` Fehler-/Fork-Fälle und
+`tests/integration_fastd_image.py` CLI, echte Daemon-Hooks und erzwungene
+ENOSYS-/EPERM-Fallbacks im vollständigen Image, auch bei sehr großen FD-Limits.
+
+```sh
+docker build --target builder -t ffdd-node-test-builder .
+python3 tests/integration_fastd_fd_close.py
+python3 tests/integration_fastd_image.py --image ghcr.io/freifunkstuff/ffdd-node:master
+```
+
+Die Publish-CI führt beide Prüfungen zusätzlich gegen den veröffentlichten
+Image-Digest aus. Peerloses Multitap benötigt dabei weder TUN noch zusätzliche
+Capabilities; die Tests verwenden ausschließlich eigene Wegwerf-Konfigurationen.
 
 ## Vorhandene Mesh-Interfaces und lokaler VLAN-Test
 

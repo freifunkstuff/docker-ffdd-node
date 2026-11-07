@@ -1,0 +1,123 @@
+--- a/src/fastd.c
++++ b/src/fastd.c
+@@ -27,10 +27,18 @@
+ #include "version.h"
+ 
+ #include <grp.h>
++#include <limits.h>
++#include <stddef.h>
++#include <stdint.h>
+ #include <signal.h>
+ #include <sys/resource.h>
+ #include <sys/wait.h>
+ #include <syslog.h>
++
++#ifdef __linux__
++#include <fcntl.h>
++#include <sys/syscall.h>
++#endif
+ 
+ #ifdef HAVE_LIBSODIUM
+ #include <sodium/core.h>
+@@ -204,6 +212,93 @@
+ 
+ /** Closes all open FDs except stdin, stdout and stderr */
+ void fastd_close_all_fds(void) {
++#ifdef __linux__
++	/* Immediate closure, not CLOEXEC; syscall() does not allocate. */
++#ifdef SYS_close_range
++	if (syscall(SYS_close_range, 3U, UINT_MAX, 0U) == 0)
++		return;
++#endif
++
++	/* Linux getdents64 ABI. No libc directory streams or allocation after fork. */
++	struct fd_dirent {
++		uint64_t ino;
++		int64_t off;
++		unsigned short reclen;
++		unsigned char type;
++		char name[];
++	};
++	union {
++		uint64_t align;
++		unsigned char bytes[4096];
++	} buffer;
++	int own_fd;
++	do {
++		own_fd = (int)syscall(SYS_openat, AT_FDCWD, "/proc/self/fd",
++			O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
++	} while (own_fd < 0 && errno == EINTR);
++	if (own_fd < 0)
++		goto fail;
++
++	for (;;) {
++		long count = syscall(SYS_getdents64, own_fd, buffer.bytes, sizeof(buffer.bytes));
++		if (count < 0) {
++			if (errno == EINTR)
++				continue;
++			goto fail;
++		}
++		if (count == 0)
++			break;
++		if ((unsigned long)count > sizeof(buffer.bytes))
++			goto fail;
++
++		for (size_t pos = 0; pos < (size_t)count;) {
++			size_t remaining = (size_t)count - pos;
++			const size_t header = offsetof(struct fd_dirent, name);
++			if (remaining < header + 1 || pos % sizeof(uint64_t))
++				goto fail;
++			const struct fd_dirent *entry = (const void *)(buffer.bytes + pos);
++			size_t length = entry->reclen;
++			if (length < header + 1 || length > remaining || length % sizeof(uint64_t))
++				goto fail;
++			const char *name = entry->name;
++			size_t capacity = length - header, end = 0;
++			while (end < capacity && name[end])
++				end++;
++			if (end == capacity || end == 0)
++				goto fail;
++			if (!((end == 1 && name[0] == '.') ||
++			      (end == 2 && name[0] == '.' && name[1] == '.'))) {
++				unsigned int fd = 0;
++				for (size_t i = 0; i < end; i++) {
++					if (name[i] < '0' || name[i] > '9')
++						goto fail;
++					unsigned int digit = (unsigned int)(name[i] - '0');
++					if (fd > ((unsigned int)INT_MAX - digit) / 10)
++						goto fail;
++					fd = 10 * fd + digit;
++				}
++				if (fd >= 3 && fd != (unsigned int)own_fd) {
++					/* Linux releases FDs on EINTR; never retry close. */
++					if (syscall(SYS_close, (int)fd) < 0 && errno != EBADF && errno != EINTR)
++						goto fail;
++				}
++			}
++			pos += length;
++		}
++	}
++	if (syscall(SYS_close, own_fd) < 0 && errno != EBADF && errno != EINTR)
++		goto fail;
++	return;
++
++fail:
++	/* Fail closed: do not exec hooks or start with uncertain closure. */
++	{
++		static const char message[] = "fastd: cannot safely close inherited descriptors\n";
++		(void)syscall(SYS_write, STDERR_FILENO, message, sizeof(message) - 1);
++	}
++	_exit(EXIT_FAILURE);
++#else
++	/* Unchanged upstream branch: this fix targets the Linux image only. */
+ 	struct rlimit rl;
+ 	int fd, maxfd;
+ 
+@@ -218,6 +313,7 @@
+ 				pr_error_errno("close");
+ 		}
+ 	}
++#endif
+ }
+ 
+ 

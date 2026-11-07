@@ -30,6 +30,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
+        id: image
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -42,3 +43,14 @@ jobs:
           tags: ghcr.io/${{ github.repository_owner }}/ffdd-node:${{ github.ref_name }}
           cache-from: type=registry,ref=ghcr.io/${{ github.repository_owner }}/ffdd-node:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ github.repository_owner }}/ffdd-node:buildcache,mode=max
+
+      - name: Verify fastd descriptor cleanup in published image
+        timeout-minutes: 10
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/ffdd-node@${{ steps.image.outputs.digest }}
+          CACHE: ghcr.io/${{ github.repository_owner }}/ffdd-node:buildcache
+        run: |
+          docker buildx build --target builder --load --cache-from "type=registry,ref=$CACHE" -t ffdd-node-test-builder .
+          docker pull "$IMAGE"
+          python3 tests/integration_fastd_fd_close.py --image ffdd-node-test-builder
+          python3 tests/integration_fastd_image.py --image "$IMAGE" --builder ffdd-node-test-builder

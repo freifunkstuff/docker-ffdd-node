@@ -1,0 +1,2 @@
+# Unified-diff context includes mandatory leading spaces and upstream indentation.
+*.patch -whitespace

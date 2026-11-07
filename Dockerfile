@@ -36,8 +36,10 @@ RUN cmake -S /build/libuecc -B /build/libuecc-build \
 RUN git clone --branch "$FASTD_VERSION" --depth 1 https://github.com/neocturne/fastd.git
 COPY patches/fastd-urandom.patch /tmp/fastd-urandom.patch
 COPY patches/fastd-log-format.patch /tmp/fastd-log-format.patch
+COPY patches/fastd-close-fds.patch /tmp/fastd-close-fds.patch
 RUN patch -d /build/fastd -p1 < /tmp/fastd-urandom.patch
 RUN patch -d /build/fastd -p1 < /tmp/fastd-log-format.patch
+RUN patch -d /build/fastd -p1 < /tmp/fastd-close-fds.patch
 RUN meson setup /build/fastd-build /build/fastd \
     -Dbuildtype=release \
     -Dbuild_tests=false \
