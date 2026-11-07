@@ -39,6 +39,7 @@ from registration_tls import build_registration_ssl_context  # noqa: E402
 from mesh_interfaces import MeshResult, ensure_mesh_interfaces, parse_mesh_interfaces  # noqa: E402
 from mesh_firewall import apply_mesh_forwarding_guard  # noqa: E402
 from lan_mesh_access import LAN_MESH_ACCESS_CONFIG_SCHEMA, allowed_sources  # noqa: E402
+from uplink_routes import UPLINK_CONFIG_SCHEMA, parse_uplink_config  # noqa: E402
 
 
 FASTD_RUNTIME_DIR = Path(os.environ.get("FASTD_RUNTIME_DIR", "/run/freifunk/fastd"))
@@ -67,6 +68,7 @@ REGISTRAR_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
     *MESH_CONFIG_SCHEMA,
     *NODE_TYPE_CONFIG_SCHEMA,
     *LAN_MESH_ACCESS_CONFIG_SCHEMA,
+    *UPLINK_CONFIG_SCHEMA,
     {
         "env": "REGISTRAR_INTERVAL",
         "path": ("registrar", "interval"),
@@ -203,6 +205,10 @@ def require_valid_registrar_config(
         issues.append("NODE_EXPECTED_ID cannot be combined with temporary registration mode")
     try:
         allowed_sources(config)
+    except ValueError as exc:
+        issues.append(str(exc))
+    try:
+        parse_uplink_config(config)
     except ValueError as exc:
         issues.append(str(exc))
     try:

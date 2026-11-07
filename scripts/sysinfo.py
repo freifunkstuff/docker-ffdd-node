@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
@@ -16,6 +17,7 @@ from backbone_runtime import (
     load_runtime_env, parse_configured_peers,
 )
 from node_identity import effective_node_id, registration_mode
+from system_resources import ResourceSnapshot, read_resources
 from node_config import (
     IDENTITY_CONFIG_SCHEMA,
     NODE_TYPE_CONFIG_SCHEMA,
@@ -48,6 +50,16 @@ COMMUNITY_DEFAULT_DOMAINS = {
 SYSINFO_CONFIG_SCHEMA: tuple[dict[str, object], ...] = (
     *IDENTITY_CONFIG_SCHEMA,
     *NODE_TYPE_CONFIG_SCHEMA,
+    {
+        "env": "SYSINFO_RESOURCE_SCOPE",
+        "required": True,
+        "default_key": "SYSINFO_RESOURCE_SCOPE",
+        "path": ("resources", "scope"),
+        "type": "str",
+        "default": "auto",
+        "enum": ("auto", "host", "container"),
+        "allow_blank": False,
+    },
     {
         "env": "NODE_CONTACT_EMAIL",
         "path": ("node", "contact", "email"),
@@ -203,6 +215,7 @@ def _has_nonblank_value(value: object) -> bool:
 
 
 def render_stub_payload(config: dict, state: dict, nodes_payload: dict | None = None) -> dict:
+    resources = _resource_snapshot(config)
     node_meta = _build_node_meta(config, state)
     os_release = _read_os_release()
     nodes_payload = build_nodes_payload(config, state) if nodes_payload is None else nodes_payload
@@ -213,7 +226,8 @@ def render_stub_payload(config: dict, state: dict, nodes_payload: dict | None = 
         "timestamp": str(int(time.time())),
         "data": {
             "firmware": _build_firmware_block(os_release),
-            "system": _build_system_block(config),
+            "system": _build_system_block(config, resources),
+            "resources": _public_resources(resources),
             "common": {
                 "community": config["node"]["community"],
                 "group_id": str(config["node"]["common"]["group_id"]),
@@ -229,7 +243,7 @@ def render_stub_payload(config: dict, state: dict, nodes_payload: dict | None = 
             },
             "gps": config["node"]["gps"],
             "contact": config["node"]["contact"],
-            "statistic": _build_statistic_block(),
+            "statistic": _build_statistic_block(resources),
             "bmxd": bmxd_data,
         },
     }
@@ -278,15 +292,39 @@ def _build_node_meta(config: dict, state: dict) -> dict[str, str]:
     }
 
 
+BUILD_IDENTITY_PATH = Path("/usr/local/share/freifunk/build-identity.json")
+
+
+def _firmware_version() -> str:
+    """Read image-owned identity; legacy explicit runtime override remains supported."""
+    if "SYSINFO_FIRMWARE_VERSION" in os.environ:
+        return os.environ["SYSINFO_FIRMWARE_VERSION"]
+    try:
+        identity = json.loads(BUILD_IDENTITY_PATH.read_text())
+    except (OSError, ValueError):
+        identity = {}
+    if not isinstance(identity, dict):
+        identity = {}
+    ref_type = str(identity.get("ref_type") or "")
+    ref = str(identity.get("ref") or "")
+    commit = str(identity.get("commit") or "")
+    version = str(identity.get("version") or "")
+    if ref_type == "tag" and (version or ref):
+        return "dockernode / " + (version or ref).removeprefix("v")
+    if ref_type == "branch" and ref and commit:
+        return f"dockernode / {ref} / {commit[:7]}"
+    return "dockernode / development"
+
+
 def _build_firmware_block(os_release: dict[str, str]) -> dict:
     distrib_id = os_release.get("ID") or os_release.get("NAME", "Alpine")
     distrib_release = os_release.get("VERSION_ID") or ""
-    version = os_release.get("VERSION") or distrib_release
     target = os.uname().machine
     description = os_release.get("PRETTY_NAME") or ""
 
     block = {
-        "version": os.environ.get("SYSINFO_FIRMWARE_VERSION", "dockernode"),
+        "name": "dockernode",
+        "version": _firmware_version(),
         "DISTRIB_ID": distrib_id,
         "DISTRIB_RELEASE": distrib_release,
         "DISTRIB_REVISION": "",
@@ -302,12 +340,27 @@ def _build_firmware_block(os_release: dict[str, str]) -> dict:
     return block
 
 
-def _build_system_block(config: dict) -> dict:
-    bmxd_status = _safe_command(["bmxd", "-c", "status"])
+def _resource_snapshot(config: dict | None = None) -> ResourceSnapshot:
+    """Use validated configuration, retaining env fallback for manual callers."""
+    scope = (config or {}).get("resources", {}).get("scope")
+    if scope is None:
+        scope = os.environ.get("SYSINFO_RESOURCE_SCOPE", "auto")
+    return read_resources(scope=scope)
 
-    return {
-        "uptime": _read_uptime_raw(),
-        "uptime_string": _format_uptime_string(_container_uptime_seconds()),
+
+def _public_resources(snapshot: ResourceSnapshot) -> dict:
+    result = {key: value for key, value in snapshot.as_dict().items()
+              if value is not None and key != "sampled_at"}
+    # Cgroup membership paths can contain workload identifiers. Publish only
+    # source kinds, never absolute paths or hidden host topology.
+    result["sources"] = {key: value.split(":", 1)[0]
+                         for key, value in snapshot.sources.items()}
+    return result
+
+
+def _build_system_block(config: dict, snapshot: ResourceSnapshot | None = None) -> dict:
+    snapshot = _resource_snapshot(config) if snapshot is None else snapshot
+    block = {
         "uname": _safe_command(["uname", "-a"]),
         "nameserver": _read_nameservers(),
         "date": datetime.now().astimezone().strftime("%c %Z"),
@@ -315,29 +368,34 @@ def _build_system_block(config: dict) -> dict:
         "model": os.environ.get("SYSINFO_MODEL", "docker-alpine"),
         "model2": os.environ.get("SYSINFO_MODEL2", ""),
         "cpuinfo": _read_cpuinfo(),
-        "cpucount": str(os.cpu_count() or 1),
-        "bmxd": bmxd_status,
+        "cpuinfo_scope": "hardware-host",
+        "bmxd": _safe_command(["bmxd", "-c", "status"]),
         "node_type": config["system"]["node_type"],
         "autoupdate": config["system"]["autoupdate"],
     }
+    # Legacy integer count rounds quota capacity up; exact CPU equivalents and
+    # visible cpuset cardinality remain separately available in data.resources.
+    count = (math.ceil(snapshot.cpu_capacity) if snapshot.scope == "container"
+             and snapshot.cpu_capacity is not None else snapshot.cpu_count)
+    if count is not None:
+        block["cpucount"] = str(count)
+    if snapshot.uptime_seconds is not None:
+        block["uptime"] = _read_uptime_raw(snapshot)
+        block["uptime_string"] = _format_uptime_string(snapshot.uptime_seconds)
+    return block
 
 
-def _build_statistic_block() -> dict:
-    meminfo = _effective_meminfo()
-    block = {
-        "meminfo_MemTotal": meminfo.get("MemTotal", ""),
-        "meminfo_MemFree": meminfo.get("MemFree", ""),
-        "meminfo_Buffers": meminfo.get("Buffers", ""),
-        "meminfo_Cached": meminfo.get("Cached", ""),
-        "cpu_load": _read_text(Path("/proc/loadavg")).strip(),
-        "cpu_stat": _read_cpu_stat(),
-        "gateway_usage": _read_gateway_usage(),
-    }
-
+def _build_statistic_block(snapshot: ResourceSnapshot | None = None) -> dict:
+    snapshot = _resource_snapshot() if snapshot is None else snapshot
+    block = {"meminfo_" + key: value for key, value in _effective_meminfo(snapshot).items()}
+    block["gateway_usage"] = _read_gateway_usage()
+    if snapshot.load_average is not None:
+        block["cpu_load"] = " ".join(str(value) for value in snapshot.load_average)
+    # Host /proc/stat is never a container CPU counter. Structured CPU seconds
+    # are published from this same snapshot in data.resources instead.
     interfaces = _read_interface_stats()
     if interfaces:
         block["interfaces"] = interfaces
-
     return block
 
 
@@ -551,34 +609,9 @@ def _read_os_release() -> dict[str, str]:
     return data
 
 
-def _container_uptime_seconds() -> float:
-    """Return seconds since this container (PID 1) was started.
-
-    /proc/uptime reflects host kernel uptime and is not virtualised per
-    namespace.  We derive the container uptime from the start-time of
-    PID 1 instead:
-
-        container_start = btime (/proc/stat) + starttime_ticks (/proc/1/stat) / HZ
-        container_uptime = now - container_start
-
-    Falls back to /proc/uptime (host uptime) if the calculation fails.
-    """
-    try:
-        stat_lines = _read_text(Path("/proc/stat")).splitlines()
-        btime_line = next((l for l in stat_lines if l.startswith("btime")), None)
-        if btime_line is None:
-            raise ValueError("btime not found in /proc/stat")
-        btime = int(btime_line.split()[1])
-        starttime_ticks = int(_read_text(Path("/proc/1/stat")).split()[21])
-        hz = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
-        container_start = btime + starttime_ticks / hz
-        return max(0.0, time.time() - container_start)
-    except Exception:
-        # Fallback: host uptime from /proc/uptime
-        try:
-            return float(_read_text(Path("/proc/uptime")).split()[0])
-        except Exception:
-            return 0.0
+def _container_uptime_seconds(snapshot: ResourceSnapshot | None = None) -> float | None:
+    """Compatibility wrapper; unknown PID 1 age never falls back to host age."""
+    return (_resource_snapshot() if snapshot is None else snapshot).uptime_seconds
 
 
 def _format_uptime_string(seconds: float) -> str:
@@ -594,10 +627,10 @@ def _format_uptime_string(seconds: float) -> str:
     return "up " + ", ".join(parts)
 
 
-def _read_uptime_raw() -> str:
-    """Return container uptime in /proc/uptime format: '<seconds> <idle>'."""
-    uptime = _container_uptime_seconds()
-    return f"{uptime:.2f} 0.00"
+def _read_uptime_raw(snapshot: ResourceSnapshot | None = None) -> str | None:
+    """Legacy first uptime token only: idle accounting is unavailable."""
+    uptime = _container_uptime_seconds(snapshot)
+    return f"{uptime:.2f}" if uptime is not None else None
 
 
 def _read_nameservers() -> list[str]:
@@ -628,74 +661,18 @@ def _read_cpuinfo() -> str:
     return ""
 
 
-def _read_meminfo() -> dict[str, str]:
-    result: dict[str, str] = {}
-    for line in _read_text(Path("/proc/meminfo")).splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        result[key.strip()] = value.strip()
-    return result
+def _effective_meminfo(snapshot: ResourceSnapshot | None = None) -> dict[str, str]:
+    """Legacy kB fields, exclusively from the resource snapshot.
 
-
-def _effective_meminfo() -> dict[str, str]:
-    """Return meminfo with container-aware totals when cgroup limits exist."""
-    host_meminfo = _read_meminfo()
-    total_kb, free_kb = _read_cgroup_memory_kb()
-    if total_kb is None or free_kb is None:
-        return host_meminfo
-
-    merged = dict(host_meminfo)
-    merged["MemTotal"] = f"{total_kb} kB"
-    merged["MemFree"] = f"{free_kb} kB"
-    if "MemAvailable" in merged:
-        merged["MemAvailable"] = f"{free_kb} kB"
-    return merged
-
-
-def _read_cgroup_memory_kb() -> tuple[int | None, int | None]:
-    current_bytes = _read_cgroup_memory_current_bytes()
-    limit_bytes = _read_cgroup_memory_limit_bytes()
-    if current_bytes is None or limit_bytes is None:
-        return None, None
-    if limit_bytes <= 0:
-        return None, None
-
-    free_bytes = max(limit_bytes - current_bytes, 0)
-    return limit_bytes // 1024, free_bytes // 1024
-
-
-def _read_cgroup_memory_current_bytes() -> int | None:
-    # cgroup v2
-    v2_value = _parse_int(_read_text(Path("/sys/fs/cgroup/memory.current")).strip())
-    if v2_value is not None:
-        return v2_value
-
-    # cgroup v1
-    return _parse_int(_read_text(Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")).strip())
-
-
-def _read_cgroup_memory_limit_bytes() -> int | None:
-    # cgroup v2
-    raw_v2 = _read_text(Path("/sys/fs/cgroup/memory.max")).strip()
-    if raw_v2 and raw_v2 != "max":
-        limit_v2 = _parse_int(raw_v2)
-        if _is_finite_cgroup_limit(limit_v2):
-            return limit_v2
-
-    # cgroup v1
-    limit_v1 = _parse_int(_read_text(Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")).strip())
-    if _is_finite_cgroup_limit(limit_v1):
-        return limit_v1
-
-    return None
-
-
-def _is_finite_cgroup_limit(value: int | None) -> bool:
-    if value is None:
-        return False
-    # cgroup v1 often signals "no limit" with huge sentinel-like values.
-    return 0 < value < (1 << 60)
+    MemFree means remaining limit-current for containers and MemAvailable for
+    hosts. Buffers are omitted: the snapshot has no scope-consistent equivalent.
+    """
+    snapshot = _resource_snapshot() if snapshot is None else snapshot
+    fields = {"MemTotal": snapshot.memory_limit_bytes,
+              "MemFree": snapshot.memory_remaining_bytes,
+              "Cached": snapshot.memory_cache_bytes}
+    return {key: f"{value // 1024} kB" for key, value in fields.items()
+            if value is not None}
 
 
 def _parse_int(value: str) -> int | None:
@@ -705,14 +682,6 @@ def _parse_int(value: str) -> int | None:
         return int(value)
     except ValueError:
         return None
-
-
-def _read_cpu_stat() -> str:
-    for line in _read_text(Path("/proc/stat")).splitlines():
-        stripped = line.strip()
-        if stripped.startswith("cpu "):
-            return stripped
-    return ""
 
 
 def _read_gateway_usage() -> list[dict[str, str]]:

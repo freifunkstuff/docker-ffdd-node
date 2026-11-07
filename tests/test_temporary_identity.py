@@ -29,10 +29,13 @@ class TemporaryIdentityTests(unittest.TestCase):
         with patch.object(node_identity.hashlib, "md5", return_value=Mock(hexdigest=lambda: "a0b1c2d3e4f5a6b7")):
             self.assertEqual(node_identity.temporary_node_id(5, "ignored"), 961)
 
-    def test_container_pid1_lifetime(self):
-        stat = "1 (name with ) spaces) " + " ".join(["S"] + ["0"] * 18 + ["25000"])
-        with patch.object(Path, "read_text", side_effect=["1000.75 0", stat]), patch.object(node_identity.os, "sysconf", return_value=100):
+    def test_container_pid1_lifetime_uses_resource_provider(self):
+        with patch.object(node_identity, "read_resources", return_value=Mock(uptime_seconds=750.75)) as read:
             self.assertEqual(node_identity.container_uptime_seconds(), 750.75)
+            read.assert_called_once_with(scope="container")
+        with patch.object(node_identity, "read_resources", return_value=Mock(uptime_seconds=None)):
+            with self.assertRaisesRegex(RuntimeError, "PID 1"):
+                node_identity.container_uptime_seconds()
 
     def test_persistence_and_separate_registered_identity(self):
         state = {"registration": {"node_id": 12345, "register_key": "keep"}, "fastd": {"secret": "keep-fastd"}}

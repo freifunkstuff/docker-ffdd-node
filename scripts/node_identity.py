@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import hashlib
-import os
-from pathlib import Path
 import subprocess
+
+from system_resources import read_resources
 
 
 def registration_mode(config: dict) -> str:
@@ -16,11 +16,10 @@ def registration_mode(config: dict) -> str:
 
 def container_uptime_seconds() -> float:
     """PID 1 lifetime, not the host's uptime (stat field 22 is starttime)."""
-    host_uptime = float(Path("/proc/uptime").read_text().split()[0])
-    stat = Path("/proc/1/stat").read_text()
-    # comm can contain spaces and parentheses; fields after its final ')' start at 3.
-    start_ticks = int(stat[stat.rfind(")") + 1:].split()[19])
-    return max(0.0, host_uptime - start_ticks / os.sysconf("SC_CLK_TCK"))
+    uptime = read_resources(scope="container").uptime_seconds
+    if uptime is None:
+        raise RuntimeError("Unable to determine container PID 1 lifetime")
+    return uptime
 
 
 def temporary_node_id(uptime_seconds: float, ip_addr_output: str) -> int:

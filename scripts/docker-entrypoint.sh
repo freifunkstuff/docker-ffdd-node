@@ -45,6 +45,10 @@ fi
 # Install isolation before the registrar activates/addresses mesh interfaces.
 # Docker should supply net.ipv4.ip_forward=1 (the container sysctl mount is read-only).
 python3 /usr/local/bin/mesh_firewall.py
+# Runtime-provided links stay quiesced while the Node preserves management
+# routes and optionally moves its uplink default. This belongs to the image,
+# not to a Kubernetes init container.
+python3 /usr/local/bin/uplink_routes.py
 ensure_ip_forward
 
 if [ "${SKIP_FAILFAST:-0}" != "1" ]; then

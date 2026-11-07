@@ -242,8 +242,38 @@ Das Gerätemodell ist standardmäßig `docker-alpine`. `SYSINFO_BOARD`,
 `SYSINFO_MODEL` und `SYSINFO_MODEL2` erlauben eine explizite Containerbeschreibung;
 der Collector bevorzugt das nichtleere `model2`. Beispielsweise meldet ein
 Kubernetes-Offloader `FFDD Docker-Node (Kubernetes)`, nicht die alte VM-Hardware.
-CPU-Beschreibung bevorzugt den tatsächlichen CPU-Modelltext; Last und CPU-Anzahl
-bleiben derzeit hostbezogen und sind keine Pod-CPU-Auslastungsmessung.
+Die CPU-Beschreibung bleibt eine Hardwareinformation und ist ausdrücklich als
+`cpuinfo_scope=hardware-host` markiert; eine virtuelle Container-CPU-Bezeichnung
+gibt es nicht. Ressourcenzähler kommen dagegen aus einem gemeinsamen Snapshot.
+
+### Gekapselte Ressourcen und Uptime
+
+`system_resources.py` ist der einzige Reader für CPU, RAM und Uptime, mit
+injizierbarem Dateisystem und Takt für eigene Tests. Das Image setzt
+`SYSINFO_RESOURCE_SCOPE=container`; native Python-Ausführung kann `auto` oder
+`host` verwenden. Auto erkennt bekannte Runtime-/Kubernetes-Hinweise, kann eine
+vollständig unmarkierte private cgroup-Namespace aber nicht sicher von einem
+Host unterscheiden. Der explizite Image-Hinweis verhindert diese Verwechslung.
+
+- cgroup v1/v2: sichtbare Quota-/Cpuset-/RAM-Grenzen, CPU-Zeit und Throttling,
+  Speicherverbrauch und Cache. Keine Hostwerte als Ersatz für unbekannte
+  Containerwerte. Sichtbare Elternlimits werden berücksichtigt.
+- `data.resources.cpu_capacity` ist die exakte Kapazität in CPU-Äquivalenten;
+  die Cpuset-Anzahl ist separat. Das ältere ganzzahlige `cpucount` rundet die
+  Kapazität auf (z.B.0,5→1); es ist keine Aussage über reservierte Kerne.
+- Container-Load-Average wird nicht erfunden. Host-`cpu_load`, `cpu_stat` und
+  Host-Bufferwerte werden dort nicht veröffentlicht. CPU-Nutzung ergibt sich
+  aus der Änderung der CPU-Sekundenzähler, nicht aus Host-Load-Average.
+- Container-Uptime ist die Lebensdauer von PID1, berechnet aus `/proc/uptime`
+  minus dessen Startticks. Die cgroup-Zugehörigkeit muss zur eigenen passen;
+  bei Host-/Shared-PID-Namespace oder fehlender Verifikation bleibt sie unbekannt.
+  Native Host-Uptime bleibt Kernel-Uptime. Kein stiller Host-Uptime-Fallback.
+- RAM-Gesamt ist das Limit, verbleibender RAM ist Limit minus Verbrauch;
+  dies ist nicht Linux-`MemAvailable`. Unbegrenzte/verborgene Limits bleiben
+  unbekannt. Kubernetes-Requests sind keine cgroup-Limits und werden nicht geraten.
+
+System, Statistik und strukturierte Ressourcen werden aus demselben Snapshot
+gebaut. Interne cgroup-Pfade werden vor Veröffentlichung entfernt.
 
 WireGuard-Datenzähler werden aus den konfigurierten `tbb_wgN`-IPIP-Interfaces
 aggregiert als `tbb_wg_rx/tx` veröffentlicht. Das verschlüsselte Underlay `tbbwg`
@@ -277,6 +307,42 @@ nicht durch zusätzliche Privilegien oder Host-Sysctl-Änderungen umgangen. Der
 Entrypoint nimmt die bereitgestellten Mesh-Links zunächst herunter, installiert
 die Schutzregeln und lässt erst dann die Mesh-L3-Konfiguration starten.
 Fehlgeschlagene Schutzregeln verhindern den Start.
+
+Anwendungscode kann keine Pakete kontrollieren, die bereits vor PID1 eintreffen.
+Für eine lückenlose Startisolation müsste die Runtime den Mesh-Anschluss zunächst
+geschlossen liefern (z.B.administrativ DOWN). Standard-Macvlan liefert ihn UP.
+Bei Forwarding1 besteht deshalb vor der ersten Entrypoint-Aktion ein bewusst
+zu akzeptierendes Startfenster ohne Node-Firewall. Dessen Länge ist nicht
+zugesichert: Ein verzögerter/fehlgeschlagener Containerstart kann es verlängern.
+Der mw-home-Offloader akzeptiert dieses Restrisiko ausdrücklich und verwendet
+normales Flannel plus zwei Macvlans, ohne RPF-Startwechsel oder Init-Container.
+Ab Prozessstart installiert die Node selbst die Policy, konfiguriert Routen und
+Adressen und aktiviert danach den Mesh-Link. Beim Containerneustart in derselben
+Pod-Namespace bleibt eine bestehende Policy stehen und wird nur atomar in eigenen
+Chains aktualisiert. Ein fehlgeschlagener Guard verhindert den weiteren Start.
+
+### Optionaler Uplink-Wechsel bei erhaltener Management-/Pod-IP
+
+Alle folgenden Werte leer: keine Änderung der bestehenden Default-Route.
+
+```dotenv
+NODE_UPLINK_INTERFACE=lan0
+NODE_UPLINK_GATEWAY=192.168.61.1
+NODE_MANAGEMENT_INTERFACE=eth0
+NODE_MANAGEMENT_GATEWAY=
+NODE_MANAGEMENT_ROUTES=10.42.0.0/16 10.43.0.0/16 192.168.1.9/32
+```
+
+Der Entrypoint installiert zuerst die Mesh-Sperre. `uplink_routes.py` validiert
+anschließend die gesamte Routingplanung, erhält die expliziten Managementziele
+über das ursprüngliche Gateway und bewegt erst dann die Default-Route ins LAN.
+Die Node kennt keine fest eingebauten Kubernetes-Netze; die Beispielpräfixe
+sind Runtime-Eingaben. Bei erneuter Ausführung kann das Managementgateway aus
+vorhandenen eindeutigen Via-Routen oder dem expliziten Wert rekonstruiert werden.
+Es wird nie die erste Subnetzadresse geraten. Fremde konkurrierende Routen oder
+mehrere Defaults führen zum Fehler, nicht zum pauschalen Löschen. Der Mesh-Link
+bleibt bei Fehlern unten; eine fehlgeschlagene Default-Verifikation versucht die
+ursprüngliche Default-Route wiederherzustellen.
 
 INPUT/OUTPUT-Regeln trennen zusätzlich die Node-Adressen: Aus dem Mesh sind nur
 Mesh-Protokoll, ICMP-Diagnose und HTTP auf den FFDD-Adressen erlaubt. Die

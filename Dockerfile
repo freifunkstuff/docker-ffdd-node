@@ -101,7 +101,7 @@ COPY config/ca-root-ffdd.crt /staging/usr/local/share/freifunk/ca-root-ffdd.crt
 COPY config/nginx.conf /staging/etc/nginx/nginx.conf
 
 # Scripts
-COPY scripts/backbone_runtime.py scripts/mesh-status.py scripts/node_config.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /staging/usr/local/bin/
+COPY scripts/backbone_runtime.py scripts/mesh-status.py scripts/node_config.py scripts/system_resources.py scripts/uplink_routes.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /staging/usr/local/bin/
 COPY scripts/fastd-backbone-cmd.sh /staging/usr/lib/fastd/backbone-cmd.sh
 COPY scripts/bmxd-launcher.sh /staging/usr/local/bin/bmxd-launcher.sh
 COPY scripts/bmxd-gateway.py /staging/usr/lib/bmxd/bmxd-gateway.py
@@ -129,7 +129,7 @@ RUN chmod +x \
 FROM staging AS tests
 
 RUN apk add --no-cache py3-yaml python3
-COPY scripts/docker-entrypoint.sh scripts/backbone_runtime.py scripts/bmxd-gateway.py scripts/mesh-status.py scripts/node_config.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/run_gateway_script.py scripts/sysinfo.py scripts/wireguard_status.py /opt/freifunk-tests/scripts/
+COPY scripts/docker-entrypoint.sh scripts/backbone_runtime.py scripts/bmxd-gateway.py scripts/mesh-status.py scripts/node_config.py scripts/system_resources.py scripts/uplink_routes.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/run_gateway_script.py scripts/sysinfo.py scripts/wireguard_status.py /opt/freifunk-tests/scripts/
 COPY tests/ /opt/freifunk-tests/tests/
 COPY config/ca-root-ffdd.crt /opt/freifunk-tests/config/ca-root-ffdd.crt
 COPY scripts/fastd-backbone-cmd.sh /opt/freifunk-tests/scripts/fastd-backbone-cmd.sh
@@ -141,6 +141,9 @@ RUN cd /opt/freifunk-tests \
 FROM alpine:3.23 AS final
 
 ENV TZ=Europe/Berlin
+# Image execution is known to be container-scoped, even with private cgroup
+# namespaces and serviceLinks disabled. Native Python execution may use auto/host.
+ENV SYSINFO_RESOURCE_SCOPE=container
 
 RUN apk add --no-cache \
     bash \
@@ -164,6 +167,18 @@ RUN apk add --no-cache \
 
 # Single COPY from staging: all freifunk files in one layer
 COPY --from=tests /staging/ /
+
+# Identity belongs to the built image, not runtime environment or its host checkout.
+# Keep these args late so a new revision reuses dependency/UI/test build caches.
+ARG BUILD_REF_TYPE
+ARG BUILD_REF
+ARG BUILD_COMMIT
+ARG BUILD_VERSION
+LABEL org.opencontainers.image.revision=$BUILD_COMMIT \
+      org.opencontainers.image.version=$BUILD_VERSION \
+      org.opencontainers.image.ref.name=$BUILD_REF
+RUN python3 -c 'import json,sys; from pathlib import Path; Path("/usr/local/share/freifunk/build-identity.json").write_text(json.dumps(dict(zip(("ref_type", "ref", "commit", "version"), sys.argv[1:])))+"\n")' \
+    "$BUILD_REF_TYPE" "$BUILD_REF" "$BUILD_COMMIT" "$BUILD_VERSION"
 
 VOLUME ["/data"]
 
