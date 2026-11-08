@@ -486,11 +486,41 @@ Filter aber nicht ausgewählt. Die Präferenz überstimmt diesen Filter nicht.
 Eine Auswahl allein schaltet weder die eigene Uplink-Freigabe noch eine
 Client-Ausleitung ein. Die tatsächliche Exit-Funktion bleibt separat abzusichern.
 
+## Web-UI und flüchtige Statistik
+
+Die bestehende Navigation und Erweiterungsschnittstelle bleiben erhalten;
+`Statistik` kommt als zusätzlicher Bereich hinzu. Hell ist der Standard,
+Hell/Dunkel/System kann im Header gewählt und lokal im Browser gespeichert werden.
+Der Nodes-Filter durchsucht ausschließlich Node-ID und IP-Adresse der Zeile.
+
+Die Statistik erfasst CPU, RAM und Backbone-Zähler unabhängig vom Browser einmal
+pro Sekunde. Die Auswahl `5 Min` zeigt 1-Sekunden-Werte, `1h` 15-Sekunden-Blöcke.
+CPU-/Traffic-Raten werden aus echten Zählerdifferenzen berechnet; Resets, fehlende
+Werte und Lücken bleiben Lücken. RAM-Blöcke enthalten Mittelwert und Min/Max.
+Das verschlüsselte WG-Underlay wird nicht zusätzlich zu seinen IPIP-Tunneln gezählt.
+
+Der eigene Runit-Dienst `statistics` liest nur Ressourcen- und Interface-Dateien;
+bmxd-Abfragen, Registrierung und Schlüsselableitungen bleiben im bestehenden
+Sysinfo-Takt. Der begrenzte Ring liegt im Arbeitsspeicher. Öffentliche JSON-Dateien
+werden atomar im Laufzeit-tmpfs `/dev/shm/ffdd-node-statistics` bereitgestellt und
+unter `/statistics.json` bzw. `/statistics-live.json` verlinkt. `/dev/shm` muss im
+Runtime beschreibbar sein; es werden keine weiteren Capabilities, Ports oder
+Datenvolumes benötigt. Der volle Ring wird alle 15 Sekunden, ein kleiner Livetail
+jede Sekunde veröffentlicht. Inhalte sind auf Ressourcen und aggregierte Zähler
+begrenzt; Kontakt, Schlüssel, Konfiguration und gesamte Mesh-Topologie fehlen.
+
+Ein Browser-Reload lädt den vorhandenen Verlauf sofort. Ein Neustart des
+Statistikdienstes oder eine Container-Neuerstellung beginnt einen neuen Ring;
+eine Laufzeitkennung verhindert das Vermischen verschiedener Ringe. Es gibt
+keine Datenbank und keine Speicherung auf `/data`.
+
 ## Wichtige Endpunkte
 
 - `GET /sysinfo.json`
 - `GET /sysinfo-json.cgi`
 - `GET /nodes.json`
+- `GET /statistics.json` (versionierter Ring mit 1s-/15s-Auflösung)
+- `GET /statistics-live.json` (kleiner aktueller 1s-Ausschnitt)
 - `GET /ui/`
 - `GET /licenses/*` (Rechtstexte)
 

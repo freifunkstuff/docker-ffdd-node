@@ -1,7 +1,26 @@
 export type RegistrationMode = 'temporary' | 'registered';
 
+export interface Resources {
+  scope?: string;
+  cpu_capacity?: number;
+  cpu_total_seconds?: number;
+  memory_current_bytes?: number;
+  memory_current_min_bytes?: number;
+  memory_current_max_bytes?: number;
+  memory_limit_bytes?: number;
+  memory_remaining_bytes?: number;
+  uptime_seconds?: number;
+}
+
 export type SysinfoPayload = {
-  timestamp?: string;
+  timestamp?: string | number;
+  aggregation?: {
+    count: number; start: string | number; end: string | number;
+    discontinuous: boolean;
+    cpu_discontinuous?: boolean;
+    rx_discontinuous?: boolean;
+    tx_discontinuous?: boolean;
+  };
   data?: {
     common?: {
       node?: string;
@@ -23,17 +42,31 @@ export type SysinfoPayload = {
       location?: string;
       note?: string;
     };
+    resources?: Resources;
     statistic?: {
       cpu_load?: string;
       meminfo_MemTotal?: string;
       meminfo_MemFree?: string;
       interfaces?: {
-        tbb_fastd_rx?: string;
-        tbb_fastd_tx?: string;
+        tbb_wg_rx?: string | number;
+        tbb_wg_tx?: string | number;
+        tbb_fastd_rx?: string | number;
+        tbb_fastd_tx?: string | number;
       };
     };
   };
 };
+
+export type StatisticsResolution = '1' | '15';
+/** Whitelisted raw detail and aggregated sysinfo frames retained by the backend. */
+export interface StatisticsHistoryPayload {
+  version: 1;
+  epoch?: string;
+  history_seconds: 3600;
+  detail_seconds: 300;
+  updated_at: string | number | null;
+  resolutions: Record<StatisticsResolution, SysinfoPayload[]>;
+}
 
 export type NodeRow = {
   node?: string;

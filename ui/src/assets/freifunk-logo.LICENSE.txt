@@ -1,0 +1,16 @@
+Freifunk-Bildmarke (unverändert)
+
+Original: https://wiki.freifunk.net/images/6/6f/Logo.svg
+Quelle und Lizenz: https://wiki.freifunk.net/Datei:Logo.svg
+Lizenz: Creative Commons Attribution-ShareAlike 3.0 (CC BY-SA 3.0)
+https://creativecommons.org/licenses/by-sa/3.0/
+
+Logo-Entwurf: Monic, gemäß https://wiki.freifunk.net/Freifunk-Styles
+SVG-Konvertierung/Upload: SAm0815, 21.06.2020, gemäß Dateiversionsgeschichte.
+Keine Änderung der Farben oder Pfade. Keine Einbindung der proprietären Logo-Schrift.
+SHA256:6166d953f3613a15e020d93e32dec8c8f0b90386f170d1c0fd52931721331bb5
+
+Favicon: unveränderte Datei von
+https://vpn1le.freifunk-leipzig.de/images/favicon.ico
+Bytegleich mit ffdd-node/files/common/www/images/favicon.ico aus der bestehenden Firmware.
+SHA256:3ebbb6c6c2df22ababe58d3af0eded760a94576dd93ac8eeacbcead1bb123327

@@ -1,6 +1,13 @@
 import type { ComponentChild } from 'preact';
 import { GATEWAY_COLUMNS, gatewayIndicators } from './gateways';
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { isThemePreference, readThemePreference, resolveTheme, writeThemePreference } from './theme';
+import type { ThemePreference } from './theme';
+import { StatisticsPage, useStatistics } from './statistics';
+import { matchesNodeFilter as matchesFilter } from './node-filter';
+import { backboneStatusText, connectionText, meshStatusText } from './status-text';
+import { mergeLiveHistory } from './statistics-live';
+import type { StatisticsLivePayload } from './statistics-live';
 import type {
   BackbonePayload,
   BackbonePeer,
@@ -9,6 +16,8 @@ import type {
   NodeRow,
   RegistrationMode,
   SysinfoPayload,
+  StatisticsHistoryPayload,
+  StatisticsResolution,
   UiExtensionDefinition,
   UiExtensionRuntimeData,
   UiExtensionsIndexPayload,
@@ -44,8 +53,10 @@ const LICENSE_ITEMS = [
 const CORE_NAV_ITEMS: NavItem[] = [
   { key: 'status', label: 'Status & Kontakt', order: 0 },
   { key: 'nodes', label: 'Nodes', order: 10 },
+  { key: 'statistics', label: 'Statistik', order: 20 },
   { key: 'licenses', label: 'Rechtliches', order: 1000 },
 ];
+const FREIFUNK_LOGO_URL = new URL('./assets/freifunk-logo.svg', import.meta.url).href;
 const EXTENSIONS_INDEX_URL = '/ui/extensions/index.json';
 const CORE_VIEW_KEYS = new Set(CORE_NAV_ITEMS.map((item) => item.key));
 
@@ -59,28 +70,6 @@ function safe(value: unknown, fallback = '—'): string {
 function currentViewFromHash(): ViewKey {
   const hash = window.location.hash.replace('#', '');
   return hash || 'status';
-}
-
-function matchesFilter(row: NodeRow, query: string): boolean {
-  if (!query) {
-    return true;
-  }
-  const haystack = [
-    row.node,
-    row.ip,
-    row.interface,
-    row.rtq,
-    row.rq,
-    row.tq,
-    row.best_next_hop,
-    row.brc,
-    row.speed,
-    row.usage,
-    row.type,
-  ]
-    .map((v) => safe(v, '').toLowerCase())
-    .join(' ');
-  return haystack.includes(query);
 }
 
 function formatAge(timestamp: string | undefined, nowSeconds: number): string {
@@ -279,10 +268,6 @@ function KeyValueTable({ rows }: { rows: Array<[string, unknown]> }) {
   );
 }
 
-function boolLabel(value: boolean | undefined, whenTrue: string, whenFalse: string): string {
-  return value ? whenTrue : whenFalse;
-}
-
 function StatusPanel({ meshStatus, registrationMode, nodeId }: {
   meshStatus: MeshStatusPayload | null;
   registrationMode: RegistrationMode | undefined;
@@ -292,9 +277,9 @@ function StatusPanel({ meshStatus, registrationMode, nodeId }: {
   const identityClass = registrationMode === 'temporary' ? 'stale' : registrationMode === 'registered' ? 'connected' : 'identity-unknown';
   const mesh = meshStatus?.mesh || {};
   const gateway = meshStatus?.gateway || {};
-  const meshText = mesh.stable ? 'Connected' : mesh.connected ? 'Stabilizing' : 'Disconnected';
+  const meshText = meshStatusText(mesh.connected, mesh.stable);
   const meshClass = mesh.stable ? 'connected' : mesh.connected ? 'stale' : 'disconnected';
-  const gatewayText = boolLabel(gateway.connected, 'Connected', 'Disconnected');
+  const gatewayText = connectionText(gateway.connected);
   const gatewayClass = gateway.connected ? 'connected' : 'disconnected';
 
   return (
@@ -365,7 +350,7 @@ function BackboneTable({ peers }: { peers: BackbonePeer[] }) {
                   <td>{safe(peer.host, '')}:{safe(peer.port, '')}</td>
                   <td>{safe(peer.interface)}</td>
                   <td>
-                    <span class={`status-pill ${safe(peer.status, '').toLowerCase()}`}>{safe(peer.status)}</span>
+                    <span class={`status-pill ${safe(peer.status, '').toLowerCase()}`}>{backboneStatusText(peer.status)}</span>
                   </td>
                 </tr>
               ))
@@ -566,8 +551,25 @@ function ExtensionView({
 }
 
 export function App() {
+  const [theme, setTheme] = useState<ThemePreference>(() => {
+    try { return readThemePreference(window.localStorage); } catch { return 'light'; }
+  });
+  useLayoutEffect(() => {
+    const media = theme === 'system' ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    const apply = () => { document.documentElement.dataset.theme = resolveTheme(theme, media?.matches ?? false); };
+    apply();
+    media?.addEventListener('change', apply);
+    return () => media?.removeEventListener('change', apply);
+  }, [theme]);
   const [view, setView] = useState<ViewKey>(currentViewFromHash());
   const [sysinfo, setSysinfo] = useState<SysinfoPayload | null>(null);
+  const [statisticsResolution, setStatisticsResolution] = useState<StatisticsResolution>('1');
+  const [statisticsHistory, setStatisticsHistory] = useState<StatisticsHistoryPayload | null>(null);
+  const [statisticsLive, setStatisticsLive] = useState<StatisticsLivePayload | null>(null);
+  const activeStatisticsHistory = useMemo(() => statisticsResolution === '1'
+    ? mergeLiveHistory(statisticsHistory, statisticsLive) : statisticsHistory,
+    [statisticsHistory, statisticsLive, statisticsResolution]);
+  const statisticsSamples = useStatistics(sysinfo, activeStatisticsHistory, statisticsResolution);
   const [nodes, setNodes] = useState<NodesPayload | null>(null);
   const [backbone, setBackbone] = useState<BackbonePayload | null>(null);
   const [meshStatus, setMeshStatus] = useState<MeshStatusPayload | null>(null);
@@ -581,6 +583,44 @@ export function App() {
   const [lastRefreshAttempt, setLastRefreshAttempt] = useState<number>(0);
   const [retryAfter, setRetryAfter] = useState<number>(0);
   const refreshInFlightRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (view !== 'statistics') return;
+    let canceled = false;
+    let historyBusy = false;
+    let liveBusy = false;
+    let nextLiveAttempt = 0;
+    async function readHistory() {
+      if (historyBusy) return;
+      historyBusy = true;
+      try {
+        const value = await loadOptionalJson<StatisticsHistoryPayload>('/statistics.json');
+        if (!canceled && value?.version === 1 && Array.isArray(value.resolutions?.['1']) && Array.isArray(value.resolutions?.['15'])) {
+          setStatisticsHistory(value);
+        }
+      } catch { /* Keep the last good ring; older backends use the live fallback. */ }
+      finally { historyBusy = false; }
+    }
+    async function readLive() {
+      if (statisticsResolution !== '1' || liveBusy || Date.now() < nextLiveAttempt) return;
+      liveBusy = true;
+      try {
+        const value = await loadOptionalJson<StatisticsLivePayload>('/statistics-live.json');
+        if (!canceled && value?.version === 1 && Array.isArray(value.samples)) setStatisticsLive(value);
+        if (!value) nextLiveAttempt = Date.now() + 15000;
+      } catch { nextLiveAttempt = Date.now() + 15000; }
+      finally { liveBusy = false; }
+    }
+    void readHistory();
+    void readLive();
+    const historyTimer = window.setInterval(() => { void readHistory(); }, 15000);
+    const liveTimer = window.setInterval(() => { void readLive(); }, 1000);
+    return () => {
+      canceled = true;
+      window.clearInterval(historyTimer);
+      window.clearInterval(liveTimer);
+    };
+  }, [view, statisticsResolution]);
 
   const extensionSignature = useMemo(
     () => JSON.stringify(extensions.map((extension) => [extension.id, extension.hash, extension.entry, extension.style || '', extension.endpoints.join('|')])),
@@ -801,16 +841,34 @@ export function App() {
     <div class="layout">
       <header class="topbar">
         <div class="topbar-title">
-          <h1>{titleName}</h1>
-          <p class="muted">Knoten {safe(common.node)}</p>
+          <a class="topbar-logo" href="https://wiki.freifunk.net/Datei:Logo.svg" target="_blank" rel="noreferrer" title="Freifunk-Logo: Monic · SVG: SAm0815 · CC BY-SA 3.0" aria-label="Freifunk-Logo: Quelle und Lizenz">
+            <img src={FREIFUNK_LOGO_URL} alt="Freifunk-Logo" width="48" height="38" />
+          </a>
+          <div>
+            <h1>{titleName}</h1>
+            <p class="muted">Knoten {safe(common.node)}</p>
+          </div>
         </div>
         <a class="topbar-community" href={communityLink} target="_blank" rel="noreferrer">
           Freifunk {communityName}
         </a>
         <div class="topbar-meta">
           <span>IP: {safe(common.ip)}</span>
-          <span>Uptime: {safe(system.uptime_string || system.uptime)}</span>
+          <span>Uptime: {safe(system.uptime_string || system.uptime).replace(/^up\s+/i, '')}</span>
           <span class={`data-age ${ageClass(currentTimestamp, nowSeconds)}`}>{formatAge(currentTimestamp, nowSeconds)}</span>
+          <label class="theme-picker">
+            Darstellung
+            <select class="theme-select" aria-label="Darstellung" value={theme} onChange={(event) => {
+              const value = (event.target as HTMLSelectElement).value;
+              if (!isThemePreference(value)) return;
+              setTheme(value);
+              try { writeThemePreference(window.localStorage, value); } catch { /* storage may be unavailable */ }
+            }}>
+              <option value="light">Hell</option>
+              <option value="dark">Dunkel</option>
+              <option value="system">System</option>
+            </select>
+          </label>
         </div>
       </header>
 
@@ -905,7 +963,7 @@ export function App() {
                 </div>
                 <input
                   type="search"
-                  placeholder="Suche nach Node, IP, Interface, BRC, Speed …"
+                  placeholder="Node-ID oder IP-Adresse"
                   value={nodeFilter}
                   onInput={(event) => setNodeFilter((event.target as HTMLInputElement).value)}
                 />
@@ -985,6 +1043,10 @@ export function App() {
             </section>
           ) : null}
 
+          {view === 'statistics' ? (
+            <StatisticsPage samples={statisticsSamples} resolution={statisticsResolution} onResolutionChange={setStatisticsResolution} />
+          ) : null}
+
           {activeExtension ? (
             <ExtensionView
               extension={activeExtension}
@@ -993,7 +1055,7 @@ export function App() {
             />
           ) : null}
 
-          {!activeExtension && view !== 'status' && view !== 'nodes' && view !== 'licenses' ? (
+          {!activeExtension && view !== 'status' && view !== 'nodes' && view !== 'licenses' && view !== 'statistics' ? (
             <section class="panel">
               <h3>Unbekannter View</h3>
               <p class="muted">Der angeforderte UI-Bereich ist nicht registriert.</p>
