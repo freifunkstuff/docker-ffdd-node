@@ -51,6 +51,8 @@ RUN git clone --branch "$FIRMWARE_TAG" --depth 1 "$FIRMWARE_REPO" /build/firmwar
 RUN test -f /build/firmware/feeds/pool/bmxd/sources/Makefile
 COPY patches/bmxd-msghdr-init.patch /tmp/bmxd-msghdr-init.patch
 RUN patch -d /build/firmware/feeds/pool/bmxd/sources -p1 < /tmp/bmxd-msghdr-init.patch
+COPY patches/bmxd-interface-debug-buffer.patch /tmp/bmxd-interface-debug-buffer.patch
+RUN patch -d /build/firmware/feeds/pool/bmxd/sources -p1 < /tmp/bmxd-interface-debug-buffer.patch
 RUN make -C /build/firmware/feeds/pool/bmxd/sources clean all
 
 WORKDIR /build/ui
