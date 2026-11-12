@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.3
+
+- Keep healthy gateway advertisements stable during bounded, unchanged runtime maintenance; startup, configuration changes and failures remain fail-closed.
+- Measure backbone traffic from kernel-owned interfaces rather than transient enrollment status; mark counter-membership changes as gaps instead of artificial throughput spikes.
+- Add maintenance-lease, admission, counter-composition and isolated 143-peer regression coverage.
+
 ## v1.1.2
 
 - Prevent BMXD interface debug-buffer overflows when aggregating OGMs across many interfaces.

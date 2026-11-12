@@ -17,7 +17,7 @@ import signal
 
 from statistics_history import StatsHistory
 from system_resources import read_resources
-from sysinfo import _read_interface_stats
+from sysinfo import _read_interface_snapshot
 from exit_observation import read_exit_counters, read_exit_generations
 from exit_traffic import ExitTrafficLedger
 
@@ -25,11 +25,20 @@ HISTORY_DIRECTORY = Path('/dev/shm/ffdd-node-statistics')
 WEBROOT = Path(os.environ.get('SYSINFO_WEBROOT', '/run/freifunk/www'))
 
 
-def collect_snapshot() -> dict:
+def collect_snapshot(previous_inventory: dict | None = None) -> dict:
     snapshot = read_resources(scope=os.environ.get('SYSINFO_RESOURCE_SCOPE', 'container'))
+    interfaces, inventory = _read_interface_snapshot()
+    if previous_inventory is not None:
+        for key, members in inventory.items():
+            if key in previous_inventory and previous_inventory[key] != members:
+                # One missing point breaks rate continuity without fabricating
+                # a zero, resetting other directions, or publishing identities.
+                interfaces.pop(key, None)
+        previous_inventory.clear()
+        previous_inventory.update(inventory)
     return {'timestamp': time.time(), 'data': {
         'resources': snapshot.as_dict(),
-        'statistic': {'interfaces': _read_interface_stats()},
+        'statistic': {'interfaces': interfaces},
         'exit_interfaces': read_exit_counters(),
     }}
 
@@ -76,6 +85,7 @@ def main() -> None:
             write_public_json(unavailable, {'version': 1, 'status': 'unavailable'})
             publish_link('exit-traffic.json', unavailable)
     history = StatsHistory()
+    interface_inventory: dict = {}
     epoch = uuid.uuid4().hex
     full_path = HISTORY_DIRECTORY / 'statistics.json'
     live_path = HISTORY_DIRECTORY / 'statistics-live.json'
@@ -84,7 +94,7 @@ def main() -> None:
     print('statistics: one-second sampling; detail5min, aggregation15s, history1h', flush=True)
     while running:
         try:
-            frame = collect_snapshot()
+            frame = collect_snapshot(interface_inventory)
             if traffic is not None:
                 try:
                     traffic.sample(frame['timestamp'], frame['data']['exit_interfaces'], read_exit_generations())

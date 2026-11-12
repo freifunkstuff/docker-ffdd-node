@@ -12,6 +12,7 @@ import subprocess
 import time
 import urllib.request
 from gateway_runtime import atomic_json
+from gateway_health import MAX_STATUS_AGE, runtime_ready, valid_timestamp
 
 PUBLIC = Path('/run/freifunk/www/gateway-control.json')
 
@@ -56,8 +57,9 @@ def fresh_json(path, maximum=65536):
     if path.stat().st_size > maximum:
         raise ValueError('invalid health record')
     data = json.loads(path.read_text())
-    stamp = data.get('timestamp', 0)
-    if not isinstance(stamp, (int, float)) or not 0 <= time.time() - stamp <= 15:
+    stamp = data.get('timestamp') if isinstance(data, dict) else None
+    now = time.time()
+    if not valid_timestamp(stamp, now) or now - stamp > MAX_STATUS_AGE:
         raise ValueError('stale health record')
     return data
 
@@ -94,26 +96,47 @@ class AnnouncementController:
         return True
 
 
-def readiness():
-    exit_status = fresh_json(os.environ.get('EXIT_STATUS_FILE', '/run/freifunk/www/exits.json'), 32768)
-    runtime = fresh_json(os.environ.get('GATEWAY_RUNTIME_STATUS_FILE', '/run/freifunk/gateway/runtime.json'), 1024 * 1024)
-    active = next((item for item in exit_status.get('exits', []) if item.get('active')), {})
-    withdrawn_at = 0
+def exit_readiness():
     try:
-        withdrawn_at = json.loads(Path('/run/freifunk/gateway/withdrawn.json').read_text()).get('timestamp', 0)
-    except (OSError, ValueError, AttributeError):
-        pass
-    exit_ready = active.get('state') == 'ready' and active.get('reachable') is True and exit_status['timestamp'] > withdrawn_at
-    runtime_ready = runtime.get('state') == 'ready'
+        status = fresh_json(os.environ.get('EXIT_STATUS_FILE', '/run/freifunk/www/exits.json'), 32768)
+        active = next((item for item in status.get('exits', []) if item.get('active')), {})
+        withdrawn_at = 0
+        try:
+            withdrawn_at = json.loads(Path('/run/freifunk/gateway/withdrawn.json').read_text()).get('timestamp', 0)
+        except FileNotFoundError:
+            pass
+        return (active.get('state') == 'ready' and active.get('reachable') is True
+                and valid_timestamp(withdrawn_at) and status['timestamp'] > withdrawn_at)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def runtime_readiness():
+    try:
+        return runtime_ready(fresh_json(os.environ.get('GATEWAY_RUNTIME_STATUS_FILE', '/run/freifunk/gateway/runtime.json'), 1024 * 1024))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def readiness():
+    exit_ready = exit_readiness()
+    peers_ready = runtime_readiness()
     api_ready = False
     try:
         with urllib.request.urlopen('http://127.0.0.1:9081/wg.cgi', timeout=1) as response:
             data = json.load(response)
         api_ready = data.get('status') in ('NotRestricted', 'Restricted') and bool(data.get('server'))
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError, AttributeError):
         pass
     dns_ready = dns_probe() if exit_ready else False
-    return {'exit': exit_ready, 'peers': runtime_ready, 'admission': api_ready, 'dns': dns_ready}
+    return {'exit': exit_ready, 'peers': peers_ready, 'admission': api_ready, 'dns': dns_ready}
+
+
+def recheck_before_announce(checks):
+    # Blocking probes must not extend either the runtime lease or exit snapshot.
+    checks['exit'] = exit_readiness()
+    checks['peers'] = runtime_readiness()
+    return all(checks.values())
 
 
 def daemon_generation():
@@ -133,11 +156,22 @@ def peer_summary():
     fastd = {'accepted': None, 'connected': None, 'restricted': enabled(os.environ.get('GATEWAY_FASTD_RESTRICT', 'false'))}
     try:
         state = fresh_json('/run/freifunk/gateway/runtime.json', 1024 * 1024)
-        peers = state.get('peers', {})
-        wg['peers'] = len(peers)
-        wg['inbound'] = sum(bool(peer.get('inbound')) for peer in peers.values())
-        wg['active'] = sum(bool(peer.get('inbound')) and peer.get('state') == 'connected' for peer in peers.values())
-        summary = json.loads(Path('/run/freifunk/www/gateway.json').read_text())
+        if not runtime_ready(state):
+            raise ValueError('runtime unavailable')
+        if state.get('state') == 'repairing':
+            # Public metrics are display-only; never use these for admission.
+            summary = fresh_json('/run/freifunk/www/gateway.json')
+            for target, source in (('peers', 'peers'), ('inbound', 'inbound'), ('active', 'incoming_connected')):
+                count = summary.get(source)
+                if type(count) is not int or count < 0:
+                    raise ValueError('invalid public count')
+                wg[target] = count
+        else:
+            peers = state.get('peers', {})
+            wg['peers'] = len(peers)
+            wg['inbound'] = sum(bool(peer.get('inbound')) for peer in peers.values())
+            wg['active'] = sum(bool(peer.get('inbound')) and peer.get('state') == 'connected' for peer in peers.values())
+            summary = json.loads(Path('/run/freifunk/www/gateway.json').read_text())
         wg['expiryCandidates'] = summary.get('expiryCandidates', 0)
     except (OSError, ValueError, AttributeError, TypeError):
         wg.update(peers=None, inbound=None, active=None, expiryCandidates=None)
@@ -175,16 +209,7 @@ def main():
                 pass
             healthy = all(checks.values())
             if healthy:
-                # DNS/API checks may block briefly: do not announce using an exit
-                # snapshot from before a concurrent withdrawal or config teardown.
-                try:
-                    current = fresh_json(os.environ.get('EXIT_STATUS_FILE', '/run/freifunk/www/exits.json'), 32768)
-                    withdrawn = Path('/run/freifunk/gateway/withdrawn.json')
-                    after = json.loads(withdrawn.read_text()).get('timestamp', 0) if withdrawn.exists() else 0
-                    checks['exit'] = current.get('phase') == 'ready' and current.get('reachable') is True and current['timestamp'] > after
-                except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                    checks['exit'] = False
-                healthy = all(checks.values())
+                healthy = recheck_before_announce(checks)
             requested = enabled(os.environ.get('GATEWAY_ANNOUNCE', 'false'))
             applied = control.apply(healthy, requested)
             wg, fastd = peer_summary()

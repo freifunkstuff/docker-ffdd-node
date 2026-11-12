@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from urllib.parse import urlencode
 from unittest.mock import patch
@@ -98,10 +99,20 @@ class GatewayAPITests(unittest.TestCase):
         self.app.apply = None
         self.app.wait_seconds = 0
         self.assertEqual(self.app.handle(self.query())[1], {"status": "RequestFailed"})
-        self.runtime.write_text(json.dumps({"peers": {"1": {"key": key(2), "applied": True}}}))
+        self.runtime.write_text(json.dumps({"state": "ready", "timestamp": time.time(), "peers": {"1": {"key": key(2), "applied": True}}}))
         self.assertEqual(self.app.handle(self.query())[1], {"status": "RequestFailed"})
-        self.runtime.write_text(json.dumps({"peers": {"1": {"key": key(1), "applied": True}}}))
+        self.runtime.write_text(json.dumps({"state": "ready", "timestamp": time.time(), "peers": {"1": {"key": key(1), "applied": True}}}))
         self.assertEqual(self.app.handle(self.query())[1]["status"], "RequestAlreadyRegistered")
+
+    def test_runtime_nonready_or_stale_cannot_ack_retained_peers(self):
+        self.app.apply = None
+        self.app.wait_seconds = 0
+        for state, age in ((None, 0), ('repairing', 0), ('applying', 0), ('retrying', 0), ('ready', 16)):
+            now = time.time()
+            self.runtime.write_text(json.dumps({'state': state, 'timestamp': now - age,
+                'last_success_at': now - 3, 'repair_started_at': now - 2,
+                'peers': {'1': {'key': key(1), 'applied': True}}}))
+            self.assertEqual(self.app.handle(self.query())[1], {'status': 'RequestFailed'})
 
     def test_errors_limits_and_no_leaks(self):
         for target in ("/wg.cgi?node=1", self.query()+"&NODE=2", "/wg.cgi?node=65536&key=bad",

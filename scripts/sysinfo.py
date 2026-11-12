@@ -735,7 +735,18 @@ def _read_exit_interface_stats() -> dict[str, str]:
 
 
 def _read_interface_stats() -> dict[str, str]:
+    """Compatibility view without private counter-composition metadata."""
+    return _read_interface_snapshot()[0]
+
+
+def _read_interface_snapshot() -> tuple[dict[str, str], dict[str, frozenset[tuple[str, str]]]]:
+    """Read kernel counters and private per-direction name/ifindex membership.
+
+    Gateway enrollment/status files describe control-plane intent, not the
+    dataplane being measured. Never use their transient peer roster here.
+    """
     interfaces: dict[str, str] = {}
+    inventory: dict[str, frozenset[tuple[str, str]]] = {}
     candidates = {
         "tbb_fastd",
     }
@@ -753,36 +764,48 @@ def _read_interface_stats() -> dict[str, str]:
     # underlay as well. Preserve the legacy aggregate keys for consumers.
     _, peers = parse_configured_peers(load_runtime_env(WIREGUARD_ENV_FILE))
     tunnel_names = {peer.ifname for peer in peers.values()
-                    if re.fullmatch(r"tbb_wg\d+", peer.ifname)}
+                    if re.fullmatch(r"tbb_wg[0-9]{1,5}", peer.ifname)}
+    net_root = Path('/sys/class/net')
     if os.environ.get('NODE_ROLE', 'node') == 'gateway':
         try:
-            gateway_status = Path(os.environ.get('GATEWAY_RUNTIME_STATUS_FILE', '/run/freifunk/gateway/runtime.json'))
-            if gateway_status.stat().st_size <= 1024 * 1024:
-                applied = json.loads(gateway_status.read_text()).get('peers', {})
-                if isinstance(applied, dict):
-                    for entry in list(applied.values())[:512]:
-                        if not isinstance(entry, dict):
-                            continue
-                        name = entry.get('ifname')
-                        if entry.get('applied') is True and isinstance(name, str) and re.fullmatch(r'tbb_wg[0-9]{1,5}', name):
-                            tunnel_names.add(name)
-        except (OSError, ValueError, TypeError, AttributeError):
-            pass
-    wg_rx = wg_tx = 0
-    have_wg = False
+            names = list(net_root.iterdir())
+        except OSError:
+            names = []
+        for device in names:
+            match = re.fullmatch(r'tbb_wg([0-9]{1,5})', device.name)
+            if not match:
+                continue
+            try:
+                alias = (device / 'ifalias').read_text(encoding='utf-8').removesuffix('\n')
+            except OSError:
+                continue
+            if alias == 'ffdd-gateway:' + match.group(1):
+                tunnel_names.add(device.name)
+    totals = {'rx': 0, 'tx': 0}
+    members: dict[str, set[tuple[str, str]]] = {'rx': set(), 'tx': set()}
     for ifname in sorted(tunnel_names):
-        base = Path("/sys/class/net") / ifname / "statistics"
-        rx = _parse_int(_read_text(base / "rx_bytes").strip())
-        tx = _parse_int(_read_text(base / "tx_bytes").strip())
-        if rx is None or tx is None or rx < 0 or tx < 0:
+        device = net_root / ifname
+        try:
+            before = _read_text(device / 'ifindex').strip()
+            counters = {direction: _parse_int(_read_text(device / 'statistics' / (direction + '_bytes')).strip())
+                        for direction in totals}
+            after = _read_text(device / 'ifindex').strip()
+        except OSError:
             continue
-        wg_rx += rx
-        wg_tx += tx
-        have_wg = True
-    if have_wg:
-        interfaces["tbb_wg_rx"] = str(wg_rx)
-        interfaces["tbb_wg_tx"] = str(wg_tx)
-    return interfaces
+        # Reject a device replaced while reading. Missing ifindex is retained
+        # for compatibility with synthetic/legacy readers; real sysfs has it.
+        if before != after:
+            continue
+        for direction, value in counters.items():
+            if value is not None and value >= 0:
+                totals[direction] += value
+                members[direction].add((ifname, before))
+    for direction in totals:
+        key = 'tbb_wg_' + direction
+        inventory[key] = frozenset(members[direction])
+        if members[direction]:
+            interfaces[key] = str(totals[direction])
+    return interfaces, inventory
 
 
 def _node_id_from_ip(ip_address: str) -> int:

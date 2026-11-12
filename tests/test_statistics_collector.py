@@ -17,7 +17,7 @@ class StatisticsCollectorTests(unittest.TestCase):
         snapshot = ResourceSnapshot(scope='container', sampled_at=100, cpu_capacity=2,
                                     cpu_total_seconds=3, memory_current_bytes=1024,
                                     memory_limit_bytes=2048, uptime_seconds=10)
-        with patch.object(collector, 'read_resources', return_value=snapshot) as resources, patch.object(collector, '_read_interface_stats', return_value={'tbb_wg_rx':'123','tbb_wg_tx':'456'}) as interfaces, patch.object(collector.time, 'time', return_value=100), patch.dict(os.environ, {'SYSINFO_RESOURCE_SCOPE':'container'}):
+        with patch.object(collector, 'read_resources', return_value=snapshot) as resources, patch.object(collector, '_read_interface_snapshot', return_value=({'tbb_wg_rx':'123','tbb_wg_tx':'456'}, {})) as interfaces, patch.object(collector.time, 'time', return_value=100), patch.dict(os.environ, {'SYSINFO_RESOURCE_SCOPE':'container'}):
             sample = collector.collect_snapshot()
         resources.assert_called_once_with(scope='container'); interfaces.assert_called_once_with()
         ring=StatsHistory(); self.assertTrue(ring.append(sample))

@@ -27,7 +27,14 @@ class GatewayObservationTests(unittest.TestCase):
                 observed.append(str(p))
                 values={'tbb_wg111':{'rx_bytes':'10','tx_bytes':'20'},'tbb_wg999':{'rx_bytes':'30','tx_bytes':'40'}}
                 return values.get(p.parent.parent.name,{}).get(p.name,'')
-            with patch.dict(os.environ,{'NODE_ROLE':'gateway','GATEWAY_RUNTIME_STATUS_FILE':str(path)}),patch.object(sysinfo,'load_runtime_env',return_value={}),patch.object(sysinfo,'parse_configured_peers',return_value=('',{'a':SimpleNamespace(ifname='tbb_wg111')})),patch.object(sysinfo,'_read_text',side_effect=read):
+            kernel = Path(d) / 'net'; kernel.mkdir()
+            for node in ('111', '999'):
+                device = kernel / ('tbb_wg' + node); device.mkdir()
+                (device / 'ifalias').write_text('ffdd-gateway:' + node + '\n')
+            original_path = Path
+            def mapped_path(value):
+                return kernel if value == '/sys/class/net' else original_path(value)
+            with patch.dict(os.environ,{'NODE_ROLE':'gateway','GATEWAY_RUNTIME_STATUS_FILE':str(path)}),patch.object(sysinfo,'Path',side_effect=mapped_path),patch.object(sysinfo,'load_runtime_env',return_value={}),patch.object(sysinfo,'parse_configured_peers',return_value=('',{'a':SimpleNamespace(ifname='tbb_wg111')})),patch.object(sysinfo,'_read_text',side_effect=read):
                 data=sysinfo._read_interface_stats()
             self.assertEqual(data['tbb_wg_rx'],'40');self.assertEqual(data['tbb_wg_tx'],'60')
             self.assertFalse(any('secret'in p or '/tbbwg/'in p for p in observed))

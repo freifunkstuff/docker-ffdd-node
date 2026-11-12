@@ -20,6 +20,7 @@ from pathlib import Path
 
 from backbone_runtime import load_runtime_env, parse_configured_peers
 from node_config import node_addresses
+from gateway_health import MAX_STATUS_AGE
 
 RUNTIME_DIR = Path('/run/freifunk/gateway')
 BMXD_ENV = Path('/run/freifunk/bmxd/bmxd.env')
@@ -132,6 +133,7 @@ class RuntimeOwner:
         self.public_path = Path(public_path)
         self._fingerprint = None
         self._last_apply = 0.0
+        self._last_success = None
 
     def cmd(self, *args, **kwargs):
         return self.runner.run(*args, **kwargs)
@@ -208,7 +210,40 @@ class RuntimeOwner:
                 if os.path.exists(temp):
                     os.unlink(temp)
 
+    def inventory_usable(self, node, peers, links, current):
+        """Bounded maintenance eligibility, not an enrollment acknowledgment."""
+        base = links.get('tbbwg', {})
+        if base.get('linkinfo', {}).get('info_kind') != 'wireguard' or 'UP' not in base.get('flags', []):
+            return False
+        if current != {peer['key'] for peer in peers}:
+            return False
+        desired_names = {peer['ifname'] for peer in peers}
+        if any(link.get('ifalias', '').startswith(ALIAS) and name not in desired_names for name, link in links.items()):
+            return False
+        local = node_addresses(node)['wireguard_ip']
+        for peer in peers:
+            link = links.get(peer['ifname'], {})
+            info = link.get('linkinfo', {})
+            data = info.get('info_data', {})
+            if ('UP' not in link.get('flags', []) or info.get('info_kind') != 'ipip'
+                    or data.get('local') != local or data.get('remote') != node_addresses(peer['node'])['wireguard_ip']
+                    or link.get('ifalias', '') not in ('', ALIAS + str(peer['node']))):
+                return False
+        return True
+
+    def invalidate(self):
+        self._fingerprint = None
+        self._last_success = None
+        atomic_json(self.runtime_dir / 'runtime.json', {'peers': {}, 'state': 'retrying', 'timestamp': time.time()})
+
     def reconcile(self, node, secret, outgoing, incoming, port=5003):
+        try:
+            return self._reconcile(node, secret, outgoing, incoming, port)
+        except Exception:
+            self.invalidate()
+            raise
+
+    def _reconcile(self, node, secret, outgoing, incoming, port=5003):
         peers = union_peers(node, outgoing, incoming)  # validate before any mutation
         if not 1 <= int(port) <= 65535:
             raise ValueError('invalid gateway listen port')
@@ -217,13 +252,25 @@ class RuntimeOwner:
             fcntl.flock(lock, fcntl.LOCK_EX)
             fingerprint = hashlib.sha256(json.dumps([node, secret, port, peers],
                                                      sort_keys=True).encode()).digest()
-            if fingerprint == self._fingerprint and time.monotonic() - self._last_apply < 30:
+            unchanged = fingerprint == self._fingerprint
+            if unchanged and time.monotonic() - self._last_apply < 30:
                 return self.refresh_status(peers)
-            # Invalidate before mutation so any failed repair retries immediately.
+            # A periodic repair must not withdraw an otherwise healthy service.
+            # Only the same live owner with unchanged intent and intact inventory
+            # can grant a short, non-renewable maintenance lease. API peers stay
+            # empty until the entire apply succeeds, exactly as on initial setup.
             self._fingerprint = None
-            # Fail closed for API waiters while any dataplane operation is pending.
-            atomic_json(self.runtime_dir / 'runtime.json', {'peers': {}, 'state': 'applying'})
             links = self.links()
+            now = time.time()
+            recent = self._last_success is not None and 0 <= now - self._last_success <= MAX_STATUS_AGE
+            maintenance = False
+            if unchanged and recent:
+                observed = set(self.cmd('wg', 'show', 'tbbwg', 'peers').stdout.split())
+                maintenance = self.inventory_usable(node, peers, links, observed)
+            pending = {'peers': {}, 'state': 'repairing' if maintenance else 'applying', 'timestamp': now}
+            if maintenance:
+                pending.update(last_success_at=self._last_success, repair_started_at=now)
+            atomic_json(self.runtime_dir / 'runtime.json', pending)
             self.ensure_base(node, secret, port, links)
             current = set(self.cmd('wg', 'show', 'tbbwg', 'peers').stdout.split())
             for peer in peers:
@@ -263,9 +310,11 @@ class RuntimeOwner:
                   ifname=p['ifname'], inbound=p['inbound'], outgoing=p['outgoing'],
                   origin='both' if p['inbound'] and p['outgoing'] else ('incoming' if p['inbound'] else 'outgoing'),
                   handshake=handshakes.get(p['key'], 0)) for p in peers}
+        self._last_success = time.time()
         atomic_json(self.runtime_dir / 'runtime.json',
-                    {'peers': status, 'state': 'ready', 'timestamp': int(time.time())})
-        atomic_json(self.public_path, {'peers': len(peers), 'inbound': sum(p['inbound'] for p in peers),
+                    {'peers': status, 'state': 'ready', 'timestamp': self._last_success})
+        atomic_json(self.public_path, {'timestamp': self._last_success, 'peers': len(peers), 'inbound': sum(p['inbound'] for p in peers),
+                                      'incoming_connected': sum(p['inbound'] and p['state'] == 'connected' for p in status.values()),
                                      'connected': sum(p['state'] == 'connected' for p in status.values())}, 0o644)
         return {p['key']: handshakes[p['key']] for p in peers
                 if p['inbound'] and p['key'] in handshakes}
@@ -334,7 +383,7 @@ def main():
         except Exception:
             # Never print subprocess stderr, YAML, or exception reprs: they may
             # contain key material. Pending peers remain unacknowledged.
-            atomic_json(owner.runtime_dir / 'runtime.json', {'peers': {}, 'state': 'retrying'})
+            owner.invalidate()
         time.sleep(1)
 
 

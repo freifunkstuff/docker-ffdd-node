@@ -14,6 +14,7 @@ import threading
 import time
 from urllib.parse import parse_qsl, urlsplit
 from gateway_store import GatewayStore, StoreError, validate_key, validate_node
+from gateway_health import fresh_ready
 
 
 def bounded_json(path, limit=1048576):
@@ -53,7 +54,7 @@ class GatewayApplication:
             try:
                 state = bounded_json(self.runtime_file)
                 entry = state["peers"][str(peer["node"])]
-                if entry.get("key") == peer["publickey"] and entry.get("applied") is True:
+                if fresh_ready(state) and entry.get("key") == peer["publickey"] and entry.get("applied") is True:
                     return True
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 pass
