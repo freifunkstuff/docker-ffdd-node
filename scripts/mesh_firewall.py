@@ -22,6 +22,17 @@ MESH_NETWORKS = ("10.200.0.0/15", "10.203.0.0/16")
 LAN_NAT_CHAIN = "FFDD_NODE_LAN_NAT"
 LAN_AUTH_CHAIN = "FFDD_NODE_LAN_AUTH"
 LAN_AUTH_MARK = "0x40000000/0x40000000"
+EXIT_HOOKS = ("FFDD_EXIT_FORWARD", "FFDD_EXIT_INPUT", "FFDD_EXIT_OUTPUT")
+
+
+def _ensure_exit_hooks() -> None:
+    """Create empty owned hooks once; do not erase a running exit controller."""
+    for table, chains in (("filter", EXIT_HOOKS), ("nat", ("FFDD_EXIT_NAT",))):
+        result = subprocess.run(["iptables", "-w", "5", "-t", table, "-S"], capture_output=True, text=True, check=True)
+        declared = {line.split()[1] for line in result.stdout.splitlines() if line.startswith("-N ")}
+        for chain in chains:
+            if chain not in declared:
+                subprocess.run(["iptables", "-w", "5", "-t", table, "-N", chain], capture_output=True, text=True, check=True)
 
 
 def _uplink_interfaces() -> set[str]:
@@ -98,9 +109,12 @@ def apply_mesh_forwarding_guard(names: list[str], backbone_interfaces=(), *, lan
         raise ValueError("MESH_INTERFACES: refusing default-route uplink: " + ", ".join(sorted(conflicts)))
     interfaces = [*names, "tbb+"]
 
-    incoming = []
-    outgoing = ["-o lo -j RETURN"]
-    forwarding = []
+    exit_enabled = bool(os.environ.get("EXIT_CONFIG_FILE", "").strip())
+    if exit_enabled:
+        _ensure_exit_hooks()
+    incoming = ["-j FFDD_EXIT_INPUT"] if exit_enabled else []
+    outgoing = ["-o lo -j RETURN"] + (["-j FFDD_EXIT_OUTPUT"] if exit_enabled else [])
+    forwarding = ["-j FFDD_EXIT_FORWARD"] if exit_enabled else []
     authorization = []
     snat = []
     if lan_sources:
@@ -128,6 +142,11 @@ def apply_mesh_forwarding_guard(names: list[str], backbone_interfaces=(), *, lan
                     f"-j SNAT --to-source {node_ip}"
                 )
     for interface in interfaces:
+        # Gateway DNS/backbone listeners are explicit role capabilities.
+        if os.environ.get('NODE_ROLE', 'node') == 'gateway':
+            for protocol in ('udp', 'tcp'):
+                incoming.append(f'-i {interface} -s 10.200.0.0/15 -d 10.200.0.0/16 -p {protocol} --dport 53 -j ACCEPT')
+            incoming.append(f'-i {interface} -s 10.200.0.0/15 -d 10.200.0.0/16 -p udp --dport 5002:5003 -j ACCEPT')
         # Link-local routing announcements are broadcast. All other local mesh
         # services are restricted to the Node's FFDD address realms.
         for broadcast in ("10.255.255.255/32", "255.255.255.255/32"):
@@ -168,7 +187,7 @@ def apply_mesh_forwarding_guard(names: list[str], backbone_interfaces=(), *, lan
         CHAIN: ("FORWARD", forwarding),
     })
     _apply_filter("iptables", "iptables-restore", {
-        LAN_NAT_CHAIN: ("POSTROUTING", [*snat, "-j RETURN"]),
+        LAN_NAT_CHAIN: ("POSTROUTING", [*(["-j FFDD_EXIT_NAT"] if exit_enabled else []), *snat, "-j RETURN"]),
     }, table="nat")
     # Authorize new flows last: forwarding and SNAT must be installed before a
     # first trusted packet can receive the mark. Disabled mode clears both chains.

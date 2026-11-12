@@ -1,0 +1,8 @@
+.exits-status { border-color: var(--border); }
+.exits-list { list-style: none; padding: 0; margin: 0; }
+.exits-list li { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem 1rem; padding: .65rem 0; border-top: 1px solid var(--border); }
+.exit-identity { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+.exit-comment { color: var(--muted, var(--text)); font-size: .85rem; margin: .2rem 0 .4rem; overflow-wrap: anywhere; }
+.exit-details { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .85rem; overflow-wrap: anywhere; }
+.exit-statistics { color: var(--text); }
+.exit-statistics > h3 { margin: 0 0 .8rem; font-size: 1.2rem; }

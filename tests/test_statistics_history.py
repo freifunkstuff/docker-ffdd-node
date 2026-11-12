@@ -224,6 +224,73 @@ class StatsHistoryTests(unittest.TestCase):
         tail[-1]['data']['resources']['cpu_total_seconds'] = 999
         self.assertEqual(history.tail(0)[0]['data']['resources']['cpu_total_seconds'], 400)
 
+    def exit_frame(self, timestamp, exits):
+        payload = self.measured(timestamp)
+        payload['data']['exit_interfaces'] = exits
+        return payload
+
+    def test_exit_end_counters_and_isolated_reset(self):
+        history = StatsHistory()
+        history.append(self.exit_frame(30, {'public-exit': {'rx_bytes': '100', 'tx_bytes': 200}}))
+        history.append(self.exit_frame(31, {'public-exit': {'rx_bytes': 150, 'tx_bytes': 220}}))
+        coarse = history.export()['resolutions']['15'][0]
+        self.assertEqual(coarse['data']['exit_interfaces'], {'public-exit': {'rx_bytes': 150, 'tx_bytes': 220}})
+        self.assertEqual(coarse['aggregation']['exit_discontinuous'], {'public-exit': {'rx': False, 'tx': False}})
+        history.append(self.exit_frame(32, {'public-exit': {'rx_bytes': 0, 'tx_bytes': 230}}))
+        history.append(self.exit_frame(33, {'public-exit': {'rx_bytes': 170, 'tx_bytes': 240}}))
+        coarse = history.export()['resolutions']['15'][0]
+        aggregation = coarse['aggregation']
+        self.assertEqual(aggregation['exit_discontinuous']['public-exit'], {'rx': True, 'tx': False})
+        for key in ('discontinuous', 'cpu_discontinuous', 'rx_discontinuous', 'tx_discontinuous'):
+            self.assertFalse(aggregation[key])
+        self.assertEqual(coarse['data']['exit_interfaces']['public-exit']['rx_bytes'], 170)
+
+    def test_exit_appearance_disappearance_missing_direction_and_gap(self):
+        history = StatsHistory()
+        history.append(self.exit_frame(30, {}))
+        history.append(self.exit_frame(31, {'exit': {'rx_bytes': 0, 'tx_bytes': 1}}))
+        history.append(self.exit_frame(32, {}))
+        coarse = history.export()['resolutions']['15'][0]
+        self.assertNotIn('exit_interfaces', coarse['data'])
+        self.assertEqual(coarse['aggregation']['exit_discontinuous']['exit'], {'rx': True, 'tx': True})
+        history = StatsHistory()
+        history.append(self.exit_frame(30, {'exit': {'rx_bytes': 10, 'tx_bytes': 10}}))
+        history.append(self.exit_frame(31, {'exit': {'rx_bytes': 20}}))
+        flags = history.export()['resolutions']['15'][0]['aggregation']['exit_discontinuous']['exit']
+        self.assertEqual(flags, {'rx': False, 'tx': True})
+        history.append(self.exit_frame(34, {'exit': {'rx_bytes': 30, 'tx_bytes': 30}}))
+        flags = history.export()['resolutions']['15'][0]['aggregation']['exit_discontinuous']['exit']
+        self.assertEqual(flags, {'rx': True, 'tx': True})
+
+    def test_exit_allowlist_privacy_and_copy(self):
+        exits = {name: {'rx_bytes': 1, 'tx_bytes': 1} for name in
+                 ('constructor', 'prototype', '__proto__', '../bad', 'ä', 'a' * 65, '', '_bad')}
+        exits.update({'zero': {'rx_bytes': '0', 'tx_bytes': False, 'PrivateKey': 'SECRET',
+                               'dns': 'SECRET', 'interface': 'SECRET', 'endpoint': 'SECRET'},
+                      'bad-values': {'rx_bytes': 'nan', 'tx_bytes': -1},
+                      'nested': {'rx_bytes': {'PrivateKey': 'SECRET'}, 'tx_bytes': float('inf')}})
+        history = StatsHistory()
+        history.append(self.exit_frame(30, exits))
+        tail = history.tail()
+        self.assertEqual(tail[0]['data']['exit_interfaces'], {'zero': {'rx_bytes': 0}, 'bad-values': {}, 'nested': {}})
+        self.assertNotIn('SECRET', json.dumps(history.export(), allow_nan=False))
+        tail[0]['data']['exit_interfaces']['zero']['rx_bytes'] = 999
+        self.assertEqual(history.tail()[0]['data']['exit_interfaces']['zero']['rx_bytes'], 0)
+        coarse = history.export()
+        coarse['resolutions']['15'][0]['aggregation']['exit_discontinuous']['zero']['rx'] = True
+        self.assertFalse(history.export()['resolutions']['15'][0]['aggregation']['exit_discontinuous']['zero']['rx'])
+
+    def test_exit_profile_and_churn_bounds(self):
+        history = StatsHistory()
+        for index in range(100):
+            exits = {f'profile-{index}-{number}': {'rx_bytes': 0, 'tx_bytes': 0} for number in range(20)}
+            history.append(self.exit_frame(30 + index / 100, exits))
+        coarse = history.export()['resolutions']['15'][0]
+        self.assertEqual(len(coarse['data']['exit_interfaces']), 8)
+        self.assertLessEqual(len(coarse['aggregation']['exit_discontinuous']), 16)
+        self.assertTrue(all(flag['rx'] and flag['tx'] for flag in coarse['aggregation']['exit_discontinuous'].values()))
+        self.assertLessEqual(len(history.tail()), 100)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -20,6 +20,7 @@ export type SysinfoPayload = {
     cpu_discontinuous?: boolean;
     rx_discontinuous?: boolean;
     tx_discontinuous?: boolean;
+    exit_discontinuous?: Record<string, { rx?: boolean; tx?: boolean }>;
   };
   data?: {
     common?: {
@@ -30,6 +31,7 @@ export type SysinfoPayload = {
       ip?: string;
     };
     system?: {
+      node_role?: 'node' | 'gateway';
       uptime?: string;
       uptime_string?: string;
       model?: string;
@@ -43,6 +45,7 @@ export type SysinfoPayload = {
       note?: string;
     };
     resources?: Resources;
+    exit_interfaces?: Record<string, { rx_bytes?: number; tx_bytes?: number }>;
     statistic?: {
       cpu_load?: string;
       meminfo_MemTotal?: string;
@@ -52,6 +55,10 @@ export type SysinfoPayload = {
         tbb_wg_tx?: string | number;
         tbb_fastd_rx?: string | number;
         tbb_fastd_tx?: string | number;
+        vpn_rx?: string | number;
+        vpn_tx?: string | number;
+        ffgw_rx?: string | number;
+        ffgw_tx?: string | number;
       };
     };
   };

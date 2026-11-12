@@ -41,6 +41,9 @@ ip addr flush dev "$BMXD_PRIMARY_INTERFACE" >/dev/null 2>&1 || true
 ip addr add "$BMXD_PRIMARY_IP/32" dev "$BMXD_PRIMARY_INTERFACE"
 
 for backbone_if in $BMXD_BACKBONE_INTERFACES; do
+    if [ "${NODE_ROLE:-node}" = "gateway" ] && ! ip link show "$backbone_if" >/dev/null 2>&1; then
+        continue # The gateway owner attaches incoming WG links dynamically.
+    fi
     wait_for_interface "$backbone_if"
 done
 
@@ -81,6 +84,9 @@ fi
 set -- "$@" --dev="$BMXD_PRIMARY_INTERFACE" /linklayer 0
 
 for backbone_if in $BMXD_BACKBONE_INTERFACES; do
+    if [ "${NODE_ROLE:-node}" = "gateway" ] && ! ip link show "$backbone_if" >/dev/null 2>&1; then
+        continue
+    fi
     set -- "$@" --dev="$backbone_if" /linklayer 1
 done
 

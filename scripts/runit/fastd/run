@@ -12,6 +12,10 @@ for marker in "$STATUS_DIR"/* "$STATUS_DIR"/.[!.]* "$STATUS_DIR"/..?*; do
     fi
 done
 
+if [ "${NODE_ROLE:-node}" = "gateway" ]; then
+    python3 /usr/local/bin/gateway_fastd.py reset
+fi
+
 while [ ! -f "$FASTD_CONFIG" ]; do
     sleep 1
 done

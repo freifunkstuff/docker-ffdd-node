@@ -9,6 +9,10 @@ HISTORY_SECONDS = 3600
 MAX_SAMPLES = 315
 DETAIL_SECONDS = 300
 RESOLUTION_SECONDS = 15
+MAX_EXIT_PROFILES = 8
+_MAX_EXIT_FLAGS = MAX_EXIT_PROFILES * 2
+_EXIT_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}', re.ASCII)
+_RESERVED_NAMES = frozenset(('constructor', 'prototype', '__proto__'))
 _MAX_NUMBER = 1.7976931348623157e308
 # The frontend uses JavaScript Number; timestamps beyond its exact integer range
 # are not meaningful Unix times and can poison ordering indefinitely.
@@ -98,6 +102,20 @@ def _compact(payload):
             compact[key] = value
     if compact:
         data['statistic'] = compact
+    exits = {}
+    for name, counters in _mapping(source.get('exit_interfaces')).items():
+        if (not isinstance(name, str) or name in _RESERVED_NAMES
+                or not _EXIT_NAME.fullmatch(name) or not isinstance(counters, dict)):
+            continue
+        clean = {}
+        _copy_numbers(counters, clean, ('rx_bytes', 'tx_bytes'))
+        # An explicitly observed profile with unknown counters is not zero and
+        # is still useful to distinguish a missing direction from disappearance.
+        exits[name] = clean
+        if len(exits) >= MAX_EXIT_PROFILES:
+            break
+    if exits:
+        data['exit_interfaces'] = exits
     return {'timestamp': timestamp, 'data': data}
 
 
@@ -148,6 +166,7 @@ class StatsHistory:
         self._memory_mean = 0
         self._memory_min = 0
         self._memory_max = 0
+        self._exit_overflow = False
 
     def append(self, payload: dict):
         sample = _compact(payload)
@@ -167,6 +186,29 @@ class StatsHistory:
             aggregation = {'count': 1, 'start': timestamp, 'end': timestamp,
                            **discontinuous}
             self._memory_count = 0
+            self._exit_overflow = False
+        before_exits = previous['data'].get('exit_interfaces', {}) if previous else {}
+        after_exits = sample['data'].get('exit_interfaces', {})
+        exit_flags = aggregation.get('exit_discontinuous', {})
+        # Keep current profiles first, then removed labels with sticky flags.
+        # Cap churn metadata independently of the eight-profile input bound.
+        names = list(after_exits) + [name for name in exit_flags if name not in after_exits]
+        names += [name for name in before_exits if name not in names]
+        if len(names) > _MAX_EXIT_FLAGS:
+            self._exit_overflow = True
+        merged = {}
+        for name in names[:_MAX_EXIT_FLAGS]:
+            old = before_exits.get(name, {})
+            new = after_exits.get(name, {})
+            flags = dict(exit_flags.get(name, {'rx': False, 'tx': False}))
+            for direction in ('rx', 'tx'):
+                key = direction + '_bytes'
+                flags[direction] |= (self._exit_overflow or aggregation['discontinuous']
+                                     or key not in new
+                                     or (previous is not None and (key not in old or new[key] < old[key])))
+            merged[name] = flags
+        if merged:
+            aggregation['exit_discontinuous'] = merged
         coarse = deepcopy(sample)
         memory = sample['data'].get('resources', {}).get('memory_current_bytes')
         if memory is not None:

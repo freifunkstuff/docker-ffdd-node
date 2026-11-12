@@ -18,6 +18,7 @@ from backbone_runtime import (
 )
 from node_identity import effective_node_id, registration_mode
 from system_resources import ResourceSnapshot, read_resources
+from exit_observation import read_exit_counters
 from node_config import (
     IDENTITY_CONFIG_SCHEMA,
     NODE_TYPE_CONFIG_SCHEMA,
@@ -371,6 +372,7 @@ def _build_system_block(config: dict, snapshot: ResourceSnapshot | None = None) 
         "cpuinfo_scope": "hardware-host",
         "bmxd": _safe_command(["bmxd", "-c", "status"]),
         "node_type": config["system"]["node_type"],
+        "node_role": config['system'].get('node_role', 'node'),
         "autoupdate": config["system"]["autoupdate"],
     }
     # Legacy integer count rounds quota capacity up; exact CPU equivalents and
@@ -394,8 +396,19 @@ def _build_statistic_block(snapshot: ResourceSnapshot | None = None) -> dict:
     # Host /proc/stat is never a container CPU counter. Structured CPU seconds
     # are published from this same snapshot in data.resources instead.
     interfaces = _read_interface_stats()
+    interfaces.update(_read_exit_interface_stats())
     if interfaces:
         block["interfaces"] = interfaces
+    volume_path = Path(os.environ.get('EXIT_TRAFFIC_PUBLIC_FILE', '/run/freifunk/www/exit-traffic.json'))
+    try:
+        if volume_path.stat().st_size <= 65536:
+            volume = json.loads(volume_path.read_text())
+            totals = volume.get('totals', {})
+            timestamps_valid = all(isinstance(volume.get(k), (int, float)) and not isinstance(volume.get(k), bool) and math.isfinite(volume[k]) and volume[k] >= 0 for k in ('started_at', 'updated_at'))
+            if volume.get('version') == 1 and timestamps_valid and all(isinstance(totals.get(k), int) and not isinstance(totals.get(k), bool) and totals[k] >= 0 for k in ('rx_bytes', 'tx_bytes')):
+                block['exit_traffic'] = {'rx_bytes_total': totals['rx_bytes'], 'tx_bytes_total': totals['tx_bytes'], 'started_at': volume.get('started_at'), 'updated_at': volume.get('updated_at')}
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
     return block
 
 
@@ -706,6 +719,21 @@ def _read_gateway_usage_map() -> dict[str, str]:
     return usage
 
 
+def _read_exit_interface_stats() -> dict[str, str]:
+    """Legacy VPN/FFGW interface counters; never fold them into backbone totals."""
+    result: dict[str, str] = {}
+    observed = read_exit_counters()
+    for direction in ('rx_bytes', 'tx_bytes'):
+        if observed and all(direction in counters for counters in observed.values()):
+            result['vpn_' + direction[:2]] = str(sum(counters[direction] for counters in observed.values()))
+    if Path('/sys/class/net/ffgw').exists():
+        for direction in ('rx', 'tx'):
+            value = _parse_int(_read_text(Path('/sys/class/net/ffgw/statistics') / (direction + '_bytes')).strip())
+            if value is not None and value >= 0:
+                result['ffgw_' + direction] = str(value)
+    return result
+
+
 def _read_interface_stats() -> dict[str, str]:
     interfaces: dict[str, str] = {}
     candidates = {
@@ -726,6 +754,20 @@ def _read_interface_stats() -> dict[str, str]:
     _, peers = parse_configured_peers(load_runtime_env(WIREGUARD_ENV_FILE))
     tunnel_names = {peer.ifname for peer in peers.values()
                     if re.fullmatch(r"tbb_wg\d+", peer.ifname)}
+    if os.environ.get('NODE_ROLE', 'node') == 'gateway':
+        try:
+            gateway_status = Path(os.environ.get('GATEWAY_RUNTIME_STATUS_FILE', '/run/freifunk/gateway/runtime.json'))
+            if gateway_status.stat().st_size <= 1024 * 1024:
+                applied = json.loads(gateway_status.read_text()).get('peers', {})
+                if isinstance(applied, dict):
+                    for entry in list(applied.values())[:512]:
+                        if not isinstance(entry, dict):
+                            continue
+                        name = entry.get('ifname')
+                        if entry.get('applied') is True and isinstance(name, str) and re.fullmatch(r'tbb_wg[0-9]{1,5}', name):
+                            tunnel_names.add(name)
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
     wg_rx = wg_tx = 0
     have_wg = False
     for ifname in sorted(tunnel_names):

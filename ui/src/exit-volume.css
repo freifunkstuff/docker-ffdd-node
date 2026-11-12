@@ -1,0 +1,14 @@
+.exit-volume-panel { grid-column: 1 / -1; min-width: 0; padding: .85rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--panel); color: var(--text); }
+.exit-volume-panel h4 { margin: 0 0 .4rem; font-size: 1rem; }
+.exit-volume-legend { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .85rem; }
+.exit-volume-legend span::before { content: ''; display: inline-block; width: .65rem; height: .65rem; margin-right: .35rem; background: currentColor; border-radius: .1rem; }
+.exit-volume-rx { color: var(--accent); fill: var(--accent); }
+.exit-volume-tx { color: var(--text); fill: var(--text); }
+.exit-volume-plot { display: block; width: 100%; height: 200px; }
+.exit-volume-gridline { stroke: var(--border); stroke-width: 1; }
+.exit-volume-axis { fill: var(--muted); font-size: 10px; }
+.exit-volume-unknown { stroke: var(--muted); stroke-dasharray: 2 2; stroke-width: 1; }
+.exit-volume-zero { stroke: var(--accent); stroke-width: 2; }
+.exit-volume-partial { fill: var(--muted); }
+.exit-volume-hit { fill: transparent; }
+.exit-volume-empty { fill: var(--muted); font-size: 12px; }

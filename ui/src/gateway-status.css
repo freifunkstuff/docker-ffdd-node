@@ -1,0 +1,9 @@
+.gateway-status-heading, .gateway-status-row { display: flex; justify-content: space-between; align-items: center; gap: .75rem; }
+.gateway-status-heading { margin-bottom: .65rem; }
+.gateway-status-heading h3 { margin: 0; }
+.gateway-status-row { margin: .5rem 0; }
+.gateway-status-row > :last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.gateway-status-checks { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .7rem; }
+.gateway-status-checks .status-pill { min-width: 0; font-size: .7rem; }
+.gateway-status-note { margin-top: .65rem; color: var(--muted); font-size: .82rem; }
+@media (max-width: 420px) { .gateway-status-row { flex-wrap: wrap; gap: .35rem; } }

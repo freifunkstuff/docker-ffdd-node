@@ -8,6 +8,12 @@ import { matchesNodeFilter as matchesFilter } from './node-filter';
 import { backboneStatusText, connectionText, meshStatusText } from './status-text';
 import { mergeLiveHistory } from './statistics-live';
 import type { StatisticsLivePayload } from './statistics-live';
+import { ExitStatusPanel, ExitStatisticsPanel } from './exits';
+import type { ExitStatusPayload } from './exits';
+import { ExitVolumeChart } from './exit-volume';
+import type { ExitTrafficPayload } from './exit-volume-data';
+import { GatewayStatusPanel } from './gateway-status';
+import type { GatewayControlPayload } from './gateway-status';
 import type {
   BackbonePayload,
   BackbonePeer,
@@ -563,6 +569,9 @@ export function App() {
   }, [theme]);
   const [view, setView] = useState<ViewKey>(currentViewFromHash());
   const [sysinfo, setSysinfo] = useState<SysinfoPayload | null>(null);
+  const [exitStatus, setExitStatus] = useState<ExitStatusPayload | null>(null);
+  const [exitTraffic, setExitTraffic] = useState<ExitTrafficPayload | null>(null);
+  const [gatewayControl, setGatewayControl] = useState<GatewayControlPayload | null>(null);
   const [statisticsResolution, setStatisticsResolution] = useState<StatisticsResolution>('1');
   const [statisticsHistory, setStatisticsHistory] = useState<StatisticsHistoryPayload | null>(null);
   const [statisticsLive, setStatisticsLive] = useState<StatisticsLivePayload | null>(null);
@@ -585,6 +594,26 @@ export function App() {
   const refreshInFlightRef = useRef<boolean>(false);
 
   useEffect(() => {
+    if (view !== 'status' && view !== 'statistics') return;
+    let canceled = false;
+    let busy = false;
+    async function refreshExits() {
+      if (busy) return;
+      busy = true;
+      try {
+        const value = await loadOptionalJson<ExitStatusPayload>('/exits.json');
+        if (!canceled && value && Array.isArray(value.exits)) setExitStatus(value);
+        const gateway = await loadOptionalJson<GatewayControlPayload>('/gateway-control.json');
+        if (!canceled) setGatewayControl(gateway?.role === 'gateway' ? gateway : null);
+      } catch { /* Existing node UI stays usable if no exit status exists. */ }
+      finally { busy = false; }
+    }
+    void refreshExits();
+    const timer = window.setInterval(() => { void refreshExits(); }, 5000);
+    return () => { canceled = true; window.clearInterval(timer); };
+  }, [view]);
+
+  useEffect(() => {
     if (view !== 'statistics') return;
     let canceled = false;
     let historyBusy = false;
@@ -598,6 +627,8 @@ export function App() {
         if (!canceled && value?.version === 1 && Array.isArray(value.resolutions?.['1']) && Array.isArray(value.resolutions?.['15'])) {
           setStatisticsHistory(value);
         }
+        const volume = await loadOptionalJson<ExitTrafficPayload>('/exit-traffic.json');
+        if (!canceled && volume) setExitTraffic(volume);
       } catch { /* Keep the last good ring; older backends use the live fallback. */ }
       finally { historyBusy = false; }
     }
@@ -913,12 +944,28 @@ export function App() {
               </section>
 
               <section class="status-layout">
+                <div class="status-column status-column-main">
                 <StatusPanel
                   meshStatus={meshStatus}
                   registrationMode={common.registration_mode ?? nodes?.node?.registration_mode}
                   nodeId={common.node}
                 />
-
+                  <BackboneTable peers={backbonePeers} />
+                  <ExitStatusPanel payload={exitStatus} />
+                  <GatewayStatusPanel payload={gatewayControl} />
+                </div>
+                <div class="status-column status-column-details">
+                <section class="panel panel-contact">
+                  <h3>Kontakt</h3>
+                  <KeyValueTable
+                    rows={[
+                      ['Name', contact.name],
+                      ['E-Mail', contact.email],
+                      ['Ort', contact.location],
+                      ['Notiz', contact.note],
+                    ]}
+                  />
+                </section>
                 <section class="panel panel-status">
                   <h3>Info</h3>
                   <KeyValueTable
@@ -937,20 +984,7 @@ export function App() {
                     ]}
                   />
                 </section>
-
-                <section class="panel panel-contact">
-                  <h3>Kontakt</h3>
-                  <KeyValueTable
-                    rows={[
-                      ['Name', contact.name],
-                      ['E-Mail', contact.email],
-                      ['Ort', contact.location],
-                      ['Notiz', contact.note],
-                    ]}
-                  />
-                </section>
-
-                <BackboneTable peers={backbonePeers} />
+                </div>
               </section>
             </>
           ) : null}
@@ -1044,7 +1078,11 @@ export function App() {
           ) : null}
 
           {view === 'statistics' ? (
-            <StatisticsPage samples={statisticsSamples} resolution={statisticsResolution} onResolutionChange={setStatisticsResolution} />
+            <>
+              <StatisticsPage samples={statisticsSamples} resolution={statisticsResolution} onResolutionChange={setStatisticsResolution} />
+              <ExitStatisticsPanel payload={exitStatus} frames={activeStatisticsHistory?.resolutions[statisticsResolution] || []} resolution={statisticsResolution} />
+              {exitStatus?.enabled ? <ExitVolumeChart payload={exitTraffic} /> : null}
+            </>
           ) : null}
 
           {activeExtension ? (

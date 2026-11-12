@@ -1,0 +1,143 @@
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from urllib.parse import urlencode
+from unittest.mock import patch
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from gateway_api import GatewayApplication, make_server
+from gateway_store import GatewayStore
+try:
+    from .test_gateway_store import key
+except ImportError:
+    from test_gateway_store import key
+
+
+class GatewayAPITests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.identity = Path(self.temp.name) / "identity.json"
+        self.identity.write_text(json.dumps({"node": 9, "key": key(9), "port": 5003}))
+        self.runtime = Path(self.temp.name) / "runtime.json"
+        self.outgoing = Path(self.temp.name) / "outgoing.json"
+        self.outgoing.write_text(json.dumps({"peers": []}))
+        self.store = GatewayStore(self.temp.name)
+        self.app = GatewayApplication(self.store, role="gateway", identity_file=self.identity,
+                                      runtime_file=self.runtime, apply=lambda p: True,
+                                      outgoing_file=self.outgoing)
+
+    def query(self, node=1, publickey=None):
+        return "/wg.cgi?" + urlencode({"node": node, "key": publickey or key(1)})
+
+    def test_role_off_has_no_gateway_side_effects(self):
+        with patch("gateway_api.GatewayStore") as constructor, patch("gateway_api.bounded_json") as reader:
+            with patch.dict("os.environ", {"NODE_ROLE": "node", "GATEWAY_MAX_PEERS": "invalid"}):
+                app = GatewayApplication()
+                self.assertIsNone(app.store)
+                self.assertEqual(app.handle("/wg.cgi"), (404, {"status": "NotFound"}))
+            constructor.assert_not_called()
+            reader.assert_not_called()
+
+    def test_role_and_discovery(self):
+        self.app.role = "node"
+        self.assertEqual(self.app.handle("/wg.cgi"), (404, {"status": "NotFound"}))
+        self.app.role = "gateway"
+        self.assertEqual(self.app.handle("/wg.cgi")[1]["status"], "NotRestricted")
+        self.app.restricted = True
+        self.assertEqual(self.app.handle("/wg.cgi")[1]["status"], "Restricted")
+        self.identity.unlink()
+        self.assertEqual(self.app.handle("/wg.cgi")[1], {"status": "NotConfigured"})
+
+    def test_enroll_echo_conflict_and_restricted(self):
+        result = self.app.handle(self.query())[1]
+        self.assertEqual(result["status"], "RequestAccepted")
+        self.assertEqual(result["client"], {"node": 1, "key": key(1)})
+        self.app.restricted = True
+        self.assertEqual(self.app.handle(self.query())[1]["status"], "RequestAlreadyRegistered")
+        self.assertEqual(self.app.handle(self.query(2, key(2)))[1]["status"], "Restricted")
+        self.assertEqual(self.app.handle(self.query(1, key(2)))[1]["status"], "RequestConflict")
+        self.assertEqual(self.app.handle(self.query(2))[1]["status"], "RequestKeyConflict")
+        self.assertEqual(self.app.handle(self.query(9))[1]["status"], "RequestConflict")
+        self.assertEqual(self.app.handle(self.query(2, key(9)))[1]["status"], "RequestKeyConflict")
+
+    def test_outgoing_conflicts_do_not_persist_and_exact_pair_allowed(self):
+        self.outgoing.write_text(json.dumps({"peers": [{"node": 1, "key": key(1)}]}))
+        self.assertEqual(self.app.handle(self.query(1, key(2)))[1], {"status": "RequestConflict"})
+        self.assertEqual(self.app.handle(self.query(2, key(1)))[1], {"status": "RequestKeyConflict"})
+        self.assertEqual(self.store.snapshot(), [])
+        self.assertEqual(self.app.handle(self.query())[1]["status"], "RequestAccepted")
+
+    def test_restricted_static_pair_authorized_but_runtime_and_revoke_still_gate(self):
+        self.app.restricted = True
+        self.outgoing.write_text(json.dumps({"peers": [{"node": 1, "key": key(1)}]}))
+        self.assertEqual(self.app.handle(self.query(1, key(2)))[1], {"status": "RequestConflict"})
+        self.assertEqual(self.store.snapshot(), [])
+        self.app.apply = lambda peer: False
+        self.assertEqual(self.app.handle(self.query())[1], {"status": "RequestFailed"})
+        self.assertEqual(len(self.store.snapshot()), 1)
+        self.app.apply = lambda peer: True
+        self.assertEqual(self.app.handle(self.query())[1]["status"], "RequestAlreadyRegistered")
+        self.store.expire(now=self.store.snapshot()[0]["created_at"] + 31 * 86400, dry_run=False)
+        self.assertEqual(self.app.handle(self.query())[1]["status"], "RequestAccepted")
+        self.store.revoke(1)
+        self.assertEqual(self.app.handle(self.query())[1], {"status": "RequestRevoked"})
+        self.assertEqual(self.app.handle(self.query(2, key(2)))[1]["status"], "Restricted")
+
+    def test_missing_or_corrupt_outgoing_fails_closed(self):
+        for raw in (None, "not json", '{"peers":{}}', '{"peers":[{"node":1,"key":"bad"}]}'):
+            if raw is None:
+                self.outgoing.unlink()
+            else:
+                self.outgoing.write_text(raw)
+            self.assertEqual(self.app.handle(self.query())[1], {"status": "RequestFailed"})
+            self.assertEqual(self.store.snapshot(), [])
+
+    def test_runtime_confirmation_no_false_success(self):
+        self.app.apply = None
+        self.app.wait_seconds = 0
+        self.assertEqual(self.app.handle(self.query())[1], {"status": "RequestFailed"})
+        self.runtime.write_text(json.dumps({"peers": {"1": {"key": key(2), "applied": True}}}))
+        self.assertEqual(self.app.handle(self.query())[1], {"status": "RequestFailed"})
+        self.runtime.write_text(json.dumps({"peers": {"1": {"key": key(1), "applied": True}}}))
+        self.assertEqual(self.app.handle(self.query())[1]["status"], "RequestAlreadyRegistered")
+
+    def test_errors_limits_and_no_leaks(self):
+        for target in ("/wg.cgi?node=1", self.query()+"&NODE=2", "/wg.cgi?node=65536&key=bad",
+                       "/wg.cgi?node=1&key=bad", "/wg.cgi?private=secret", "/wg.cgi?node"):
+            self.assertEqual(self.app.handle(target)[1], {"status": "RequestFailed"})
+        self.assertEqual(self.app.handle("/wg.cgi", "POST")[0], 405)
+        self.assertEqual(self.app.handle("/wg.cgi?" + "x"*3000)[0], 414)
+        self.app.rate_limit = 1
+        self.assertEqual(self.app.handle(self.query(2, key(2)))[0], 200)
+        self.assertEqual(self.app.handle(self.query(3, key(3)))[0], 429)
+        self.app.rate_limit = 120
+        self.app.apply = lambda p: (_ for _ in ()).throw(RuntimeError("private path"))
+        self.assertEqual(self.app.handle(self.query())[1], {"status": "RequestFailed"})
+
+    def test_discovery_and_fleet_reconnect_bypass_new_claim_budget(self):
+        self.identity.write_text(json.dumps({"node": 9, "key": key(255), "port": 5003}))
+        for node in range(140):
+            self.store.enroll(node + 100, key(node), 9)
+        self.app.rate_limit = 1
+        self.assertEqual(self.app.handle(self.query(400, key(200)))[0], 200)
+        self.assertEqual(self.app.handle(self.query(401, key(201)))[0], 429)
+        with patch.object(self.store, "snapshot", side_effect=AssertionError("discovery must not scan peers")):
+            for _ in range(140):
+                self.assertEqual(self.app.handle("/wg.cgi")[1]["status"], "NotRestricted")
+        for node in range(140):
+            self.assertEqual(self.app.handle(self.query(node + 100, key(node)))[1]["status"],
+                             "RequestAlreadyRegistered")
+        self.assertEqual(len(self.app.requests), 1)
+
+    def test_case_and_loopback(self):
+        target = "/wg.cgi?" + urlencode({"Node": 0, "Key": key(1)})
+        self.assertEqual(self.app.handle(target)[1]["status"], "RequestAccepted")
+        server = make_server(self.app, port=0)
+        self.addCleanup(server.server_close)
+        self.assertEqual(server.server_address[0], "127.0.0.1")
+
+
+if __name__ == "__main__":
+    unittest.main()

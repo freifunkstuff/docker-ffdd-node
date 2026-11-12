@@ -89,6 +89,14 @@ NODE_TYPE_CONFIG_SCHEMA: ConfigSchema = (
         "enum": ("node", "server"),
         "allow_blank": False,
     },
+    {
+        "env": "NODE_ROLE",
+        "path": ("system", "node_role"),
+        "type": "str",
+        "default": "node",
+        "enum": ("node", "gateway"),
+        "allow_blank": False,
+    },
 )
 
 BACKBONE_CONFIG_SCHEMA: ConfigSchema = (

@@ -103,7 +103,7 @@ COPY config/ca-root-ffdd.crt /staging/usr/local/share/freifunk/ca-root-ffdd.crt
 COPY config/nginx.conf /staging/etc/nginx/nginx.conf
 
 # Scripts
-COPY scripts/backbone_runtime.py scripts/mesh-status.py scripts/node_config.py scripts/system_resources.py scripts/statistics_history.py scripts/statistics_collector.py scripts/uplink_routes.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /staging/usr/local/bin/
+COPY scripts/backbone_runtime.py scripts/mesh-status.py scripts/node_config.py scripts/system_resources.py scripts/statistics_history.py scripts/statistics_collector.py scripts/exit_config.py scripts/exit_runtime.py scripts/exit_service.py scripts/exit_dns.py scripts/exit_observation.py scripts/exit_traffic.py scripts/gateway_role.py scripts/gateway_init.py scripts/gateway_store.py scripts/gateway_api.py scripts/gateway_runtime.py scripts/gateway_fastd.py scripts/gateway_control.py scripts/gateway_admin.py scripts/uplink_routes.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/sysinfo.py scripts/wireguard_status.py /staging/usr/local/bin/
 COPY scripts/fastd-backbone-cmd.sh /staging/usr/lib/fastd/backbone-cmd.sh
 COPY scripts/bmxd-launcher.sh /staging/usr/local/bin/bmxd-launcher.sh
 COPY scripts/bmxd-gateway.py /staging/usr/lib/bmxd/bmxd-gateway.py
@@ -122,6 +122,11 @@ RUN chmod +x \
     /staging/etc/service/registrar/run \
     /staging/etc/service/sysinfo/run \
     /staging/etc/service/statistics/run \
+    /staging/etc/service/exits/run \
+    /staging/etc/service/exit-dns/run \
+    /staging/etc/service/gateway-api/run \
+    /staging/etc/service/gateway-runtime/run \
+    /staging/etc/service/gateway-control/run \
     /staging/etc/service/fastd/run \
     /staging/etc/service/wireguard/run \
     /staging/etc/service/bmxd/run \
@@ -131,8 +136,8 @@ RUN chmod +x \
 
 FROM staging AS tests
 
-RUN apk add --no-cache py3-yaml python3
-COPY scripts/docker-entrypoint.sh scripts/backbone_runtime.py scripts/bmxd-gateway.py scripts/mesh-status.py scripts/node_config.py scripts/system_resources.py scripts/statistics_history.py scripts/statistics_collector.py scripts/uplink_routes.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/run_gateway_script.py scripts/sysinfo.py scripts/wireguard_status.py /opt/freifunk-tests/scripts/
+RUN apk add --no-cache py3-yaml python3 tzdata
+COPY scripts/docker-entrypoint.sh scripts/backbone_runtime.py scripts/bmxd-gateway.py scripts/mesh-status.py scripts/node_config.py scripts/system_resources.py scripts/statistics_history.py scripts/statistics_collector.py scripts/exit_config.py scripts/exit_runtime.py scripts/exit_service.py scripts/exit_dns.py scripts/exit_observation.py scripts/exit_traffic.py scripts/gateway_role.py scripts/gateway_init.py scripts/gateway_store.py scripts/gateway_api.py scripts/gateway_runtime.py scripts/gateway_fastd.py scripts/gateway_control.py scripts/gateway_admin.py scripts/uplink_routes.py scripts/lan_mesh_access.py scripts/node_identity.py scripts/mesh_interfaces.py scripts/mesh_firewall.py scripts/registration_tls.py scripts/registrar.py scripts/run_gateway_script.py scripts/sysinfo.py scripts/wireguard_status.py /opt/freifunk-tests/scripts/
 COPY tests/ /opt/freifunk-tests/tests/
 COPY config/ca-root-ffdd.crt /opt/freifunk-tests/config/ca-root-ffdd.crt
 COPY scripts/fastd-backbone-cmd.sh /opt/freifunk-tests/scripts/fastd-backbone-cmd.sh
@@ -151,6 +156,7 @@ ENV SYSINFO_RESOURCE_SCOPE=container
 RUN apk add --no-cache \
     bash \
     bridge-utils \
+    dnsmasq \
     iproute2 \
     iptables \
     iputils \

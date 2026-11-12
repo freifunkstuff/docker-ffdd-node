@@ -710,10 +710,28 @@ def render_fastd_runtime(config: dict, secret: str, peers: list[dict[str, str]],
     method = str(config["fastd"]["method"])
     log_level = str(config["fastd"]["log_level"])
     addresses = node_addresses(assigned_node_id)
+    gateway = config.get('system', {}).get('node_role') == 'gateway'
+    gateway_include = ''
+    verify_hook = ''
+    up_hook = '/usr/lib/fastd/backbone-cmd.sh up'
+    down_hook = '/usr/lib/fastd/backbone-cmd.sh down'
+    establish_hook = '/usr/lib/fastd/backbone-cmd.sh establish'
+    disestablish_hook = '/usr/lib/fastd/backbone-cmd.sh disestablish'
+    if gateway:
+        accepted = Path(os.environ.get('GATEWAY_FASTD_ROOT', '/data/gateway/fastd')) / 'accepted'
+        if not accepted.is_absolute() or any(character in str(accepted) for character in ('"', chr(10), chr(13), ';')):
+            raise ValueError('invalid gateway fastd state directory')
+        accepted.mkdir(parents=True, exist_ok=True)
+        gateway_include = f'include peers from "{accepted}";'
+        verify_hook = 'on verify sync "python3 /usr/local/bin/gateway_fastd.py verify";'
+        up_hook += '; python3 /usr/local/bin/gateway_fastd.py reset'
+        down_hook += '; python3 /usr/local/bin/gateway_fastd.py reset'
+        establish_hook += '; python3 /usr/local/bin/gateway_fastd.py establish'
+        disestablish_hook += '; python3 /usr/local/bin/gateway_fastd.py disestablish'
 
     FASTD_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
 
-    if not peers:
+    if not peers and not gateway:
         cleared = _clear_fastd_runtime()
         env_content = "\n".join(
             [
@@ -729,23 +747,27 @@ def render_fastd_runtime(config: dict, secret: str, peers: list[dict[str, str]],
         return cleared or env_changed
 
     peer_changed = sync_peer_dir(peers)
+    methods = [method] if not gateway else list(dict.fromkeys([method, 'null', 'null+salsa2012+umac', 'salsa2012+umac']))
+    method_lines = chr(10).join(f'method "{item}";' for item in methods)
 
     fastd_config = f'''log level {log_level};
 log to stderr level {log_level};
 mode tap;
 interface "{interface}";
-method "{method}";
+{method_lines}
 bind any:{port};
 secret "{secret}";
 mtu {mtu};
 packet mark 0x5002;
 include peers from "{PEER_DIR}";
+{gateway_include}
+{verify_hook}
 forward no;
-on up sync "/usr/lib/fastd/backbone-cmd.sh up";
-on down sync "/usr/lib/fastd/backbone-cmd.sh down";
+on up sync "{up_hook}";
+on down sync "{down_hook}";
 on connect sync "/usr/lib/fastd/backbone-cmd.sh connect";
-on establish sync "/usr/lib/fastd/backbone-cmd.sh establish";
-on disestablish sync "/usr/lib/fastd/backbone-cmd.sh disestablish";
+on establish sync "{establish_hook}";
+on disestablish sync "{disestablish_hook}";
 '''
     config_changed = write_text_atomic(FASTD_CONFIG, fastd_config)
     env_content = "\n".join(
@@ -906,6 +928,16 @@ def reconcile_wireguard_runtime(
     )
 
     WIREGUARD_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    if config.get('system', {}).get('node_role') == 'gateway':
+        # The gateway owner applies the union of outbound and accepted peers.
+        # This client reconciler must not delete inbound kernel state.
+        changed = write_text_atomic(WIREGUARD_ENV_FILE, desired_content)
+        gateway_runtime = Path(os.environ.get('GATEWAY_RUNTIME_DIR', '/run/freifunk/gateway'))
+        outgoing_path = gateway_runtime / 'outgoing.json'
+        outgoing = {'peers': [{'node': int(peer['node']), 'key': peer['key'], 'endpoint': f"{peer['host']}:{peer['endpoint_port']}"} for peer in peers]}
+        changed = write_text_atomic(outgoing_path, json.dumps(outgoing, sort_keys=True)) or changed
+        known = set(desired_ifaces) | set(_list_wireguard_tunnels())
+        return changed, sorted(known)
     pending_file = WIREGUARD_RUNTIME_DIR / "apply-pending"
     retry_incomplete_apply = pending_file.exists()
     config_changed = (
@@ -1174,6 +1206,9 @@ def run_iteration(
     config = config_override if config_override is not None else require_valid_registrar_config(logger=log_info)
     state = load_state()
     previous_node_id = effective_node_id(config, state)
+    if config.get('system', {}).get('node_role') == 'gateway' and os.environ.get('GATEWAY_ALLOW_IDENTITY_GENERATION', 'false').lower() != 'true':
+        if not state.get('wireguard', {}).get('secret') or not state.get('fastd', {}).get('secret'):
+            raise SystemExit('gateway private identity missing; refusing automatic replacement')
     fastd_secret, fastd_secret_created = ensure_secret(state)
     wireguard_secret, wireguard_secret_created = ensure_wireguard_secret(state)
     if registration_mode(config) == "temporary":
@@ -1213,7 +1248,7 @@ def run_iteration(
         wireguard_public,
     )
     backbone_interfaces: list[str] = []
-    if fastd_peers:
+    if fastd_peers or config.get('system', {}).get('node_role') == 'gateway':
         backbone_interfaces.append(config["fastd"]["interface"])
     backbone_interfaces.extend(wireguard_ifaces)
 
