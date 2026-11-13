@@ -5,7 +5,7 @@ import { isThemePreference, readThemePreference, resolveTheme, writeThemePrefere
 import type { ThemePreference } from './theme';
 import { StatisticsPage, useStatistics } from './statistics';
 import { matchesNodeFilter as matchesFilter } from './node-filter';
-import { backboneStatusText, connectionText, meshStatusText } from './status-text';
+import { backboneStatusText, connectionText, meshStatusText, showSelectedGateway } from './status-text';
 import { mergeLiveHistory } from './statistics-live';
 import type { StatisticsLivePayload } from './statistics-live';
 import { ExitStatusPanel, ExitStatisticsPanel } from './exits';
@@ -274,7 +274,8 @@ function KeyValueTable({ rows }: { rows: Array<[string, unknown]> }) {
   );
 }
 
-function StatusPanel({ meshStatus, registrationMode, nodeId }: {
+function StatusPanel({ meshStatus, registrationMode, nodeId, nodeRole }: {
+  nodeRole?: string;
   meshStatus: MeshStatusPayload | null;
   registrationMode: RegistrationMode | undefined;
   nodeId: string | undefined;
@@ -300,7 +301,7 @@ function StatusPanel({ meshStatus, registrationMode, nodeId }: {
           <span>Mesh</span>
           <span class={`status-pill ${meshClass}`}>{meshText}</span>
         </div>
-        <div class="status-summary-row">
+        {showSelectedGateway(nodeRole) ? <div class="status-summary-row">
           <div class="status-summary-label">
             <span>Gateway</span>
             {gateway.selected ? <span class="status-summary-meta">{gateway.selected}</span> : null}
@@ -308,7 +309,7 @@ function StatusPanel({ meshStatus, registrationMode, nodeId }: {
           <div class="status-summary-value">
             <span class={`status-pill ${gatewayClass}`}>{gatewayText}</span>
           </div>
-        </div>
+        </div> : null}
       </div>
       <div aria-live="polite">
         {registrationMode === 'temporary' ? (
@@ -947,6 +948,7 @@ export function App() {
                 <div class="status-column status-column-main">
                 <StatusPanel
                   meshStatus={meshStatus}
+                  nodeRole={system.node_role ?? gatewayControl?.role}
                   registrationMode={common.registration_mode ?? nodes?.node?.registration_mode}
                   nodeId={common.node}
                 />

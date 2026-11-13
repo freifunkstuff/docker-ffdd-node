@@ -1,3 +1,7 @@
+export function showSelectedGateway(nodeRole: unknown): boolean {
+  return nodeRole !== 'gateway';
+}
+
 export function connectionText(value: boolean | undefined): string {
   return value === true ? 'Verbunden' : value === false ? 'Getrennt' : 'Unbekannt';
 }

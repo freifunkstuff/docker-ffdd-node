@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.1.4
+
+- Hide the selected upstream-gateway client status on functional gateway instances; preserve it for normal nodes and keep the gateway's own health and announcement status separate.
+
 ## v1.1.3
 
 - Keep healthy gateway advertisements stable during bounded, unchanged runtime maintenance; startup, configuration changes and failures remain fail-closed.
