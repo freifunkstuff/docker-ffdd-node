@@ -114,6 +114,44 @@ class GatewayAPITests(unittest.TestCase):
                 'peers': {'1': {'key': key(1), 'applied': True}}}))
             self.assertEqual(self.app.handle(self.query())[1], {'status': 'RequestFailed'})
 
+    def test_repair_confirms_only_prior_success_not_store_known_retry(self):
+        self.app.apply = None
+        self.app.wait_seconds = 0
+        self.store.enroll(1, key(1), 9)
+        now = time.time()
+        repair = dict(state='repairing', timestamp=now, last_success_at=now - 1,
+                      repair_started_at=now, peers={},
+                      confirmed_peers={'1': {'key': key(1), 'applied': True}})
+        self.runtime.write_text(json.dumps(repair))
+        self.assertEqual(self.app.handle(self.query())[1]['status'], 'RequestAlreadyRegistered')
+        for _ in range(3):
+            self.assertEqual(self.app.handle(self.query(2, key(2)))[1], {'status': 'RequestFailed'})
+        self.assertEqual({peer['node'] for peer in self.store.snapshot()}, {1, 2})
+        self.assertEqual(self.app.handle(self.query(1, key(2)))[1], {'status': 'RequestConflict'})
+        self.assertEqual(self.app.handle(self.query(3, key(1)))[1], {'status': 'RequestKeyConflict'})
+        self.store.revoke(1)
+        self.assertEqual(self.app.handle(self.query())[1], {'status': 'RequestRevoked'})
+        self.runtime.write_text(json.dumps(dict(state='ready', timestamp=time.time(),
+            peers={'2': {'key': key(2), 'applied': True}})))
+        self.assertEqual(self.app.handle(self.query(2, key(2)))[1]['status'], 'RequestAlreadyRegistered')
+
+    def test_repair_confirmation_expiry_and_cross_state_maps(self):
+        self.app.apply = None
+        self.app.wait_seconds = 0
+        peers = {'1': {'key': key(1), 'applied': True}}
+        now = time.time()
+        repair = dict(state='repairing', timestamp=now, last_success_at=now - 1,
+                      repair_started_at=now, peers={}, confirmed_peers=peers)
+        for record in (dict(repair, repair_started_at=now - 10, last_success_at=now - 11),
+                       dict(repair, last_success_at=now - 15),
+                       dict(repair, state='ready'), dict(repair, state='applying'),
+                       dict(repair, state='retrying'),
+                       dict(repair, peers=peers, confirmed_peers={}),
+                       dict(repair, confirmed_peers={'1': {'key': key(1), 'applied': 1}})):
+            with self.subTest(record=record):
+                self.runtime.write_text(json.dumps(record))
+                self.assertEqual(self.app.handle(self.query())[1], {'status': 'RequestFailed'})
+
     def test_errors_limits_and_no_leaks(self):
         for target in ("/wg.cgi?node=1", self.query()+"&NODE=2", "/wg.cgi?node=65536&key=bad",
                        "/wg.cgi?node=1&key=bad", "/wg.cgi?private=secret", "/wg.cgi?node"):

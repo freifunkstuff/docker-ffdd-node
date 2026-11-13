@@ -24,6 +24,22 @@ def fresh_ready(record, now=None):
             and now - record['timestamp'] <= MAX_STATUS_AGE)
 
 
+def peer_confirmed(record, node, key, now=None):
+    """Confirm exact peer identity using only the authority for this state."""
+    if fresh_ready(record, now):
+        peers = record.get('peers')
+    elif (isinstance(record, dict) and record.get('state') == 'repairing'
+          and runtime_ready(record, now)):
+        peers = record.get('confirmed_peers')
+    else:
+        return False
+    if not isinstance(peers, dict) or not isinstance(key, str):
+        return False
+    entry = peers.get(str(node))
+    return (isinstance(entry, dict) and entry.get('key') == key
+            and entry.get('applied') is True)
+
+
 def runtime_ready(record, now=None):
     """Service readiness includes only an explicit, bounded maintenance lease."""
     now = time.time() if now is None else now

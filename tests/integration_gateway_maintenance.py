@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Real 143-peer maintenance proof; opt-in, isolated, not a full exit probe.
 
-Run with --image ffdd-node:maintenance-review after the candidate build completes.
+Run with --image ffdd-node:enrollment-review after the candidate build completes.
 Only synthetic identities generated inside the disposable network-none container
 are used. No host mounts, devices, production connectivity or private-key output.
 """
@@ -23,6 +23,10 @@ import gateway_runtime as runtime
 from gateway_health import fresh_ready, runtime_ready
 from gateway_control import AnnouncementController
 from sysinfo import _read_interface_snapshot
+from gateway_api import GatewayApplication, make_server
+from gateway_store import GatewayStore
+from urllib.parse import urlencode
+from urllib.request import urlopen
 root = pathlib.Path('/tmp/maintenance-proof'); root.mkdir(mode=0o700)
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, **kwargs)
@@ -30,7 +34,7 @@ def key():
     secret = run('wg', 'genkey').stdout
     public = run('wg', 'pubkey', input=secret).stdout.decode().strip()
     return secret.decode().strip(), public
-secret, _ = key()
+secret, server_public = key()
 incoming = [dict(node=n, publickey=key()[1]) for n in range(1000, 1143)]
 primary = runtime.node_addresses(901)['primary_ip']
 run('ip', 'link', 'set', 'lo', 'up')
@@ -49,16 +53,55 @@ def controller_run(args, **kwargs):
 controller = AnnouncementController(controller_run)
 class DelayedRunner(runtime.CommandRunner):
     delay = 0
+    during_delay = None
     def run(self, *args, **kwargs):
         if 'private-key' in args and self.delay:
             delay, self.delay = self.delay, 0
-            time.sleep(delay)
+            start = time.monotonic()
+            if self.during_delay:
+                callback, self.during_delay = self.during_delay, None
+                time.sleep(.1)
+                callback()
+            time.sleep(max(0, delay-(time.monotonic()-start)))
         return super().run(*args, **kwargs)
 runner = DelayedRunner()
 owner = runtime.RuntimeOwner(runner, root/'runtime', env, root/'public.json')
 status_path = root/'runtime/runtime.json'
 def status():
     return json.loads(status_path.read_text())
+store = GatewayStore(root/'store', max_peers=512)
+for peer in incoming:
+    store.enroll(peer['node'], peer['publickey'], 901)
+identity = root/'identity.json'
+runtime.atomic_json(identity, dict(node=901, key=server_public, port=5003))
+outgoing = root/'outgoing.json'
+runtime.atomic_json(outgoing, {'peers': []})
+application = GatewayApplication(store=store, role='gateway', identity_file=identity,
+    runtime_file=status_path, outgoing_file=outgoing, wait_seconds=.1)
+http_server = make_server(application, port=0)
+http_thread = threading.Thread(target=http_server.serve_forever, daemon=True)
+http_thread.start()
+http_results = []
+unknown_public = key()[1]
+def http_get(node=None, public=None):
+    query = '' if node is None else '?'+urlencode(dict(node=node, key=public))
+    with urlopen('http://127.0.0.1:'+str(http_server.server_port)+'/wg.cgi'+query, timeout=2) as response:
+        assert response.status == 200
+        return json.load(response)
+def repair_http_probe():
+    assert status()['state'] == 'repairing' and status()['peers'] == {}
+    discovery = http_get()
+    assert discovery['status']=='NotRestricted' and discovery['server']==dict(node=901, key=server_public, port=5003)
+    known = http_get(1000, incoming[0]['publickey'])
+    assert known['status']=='RequestAlreadyRegistered' and known['client']==dict(node=1000, key=incoming[0]['publickey'])
+    first = http_get(2000, unknown_public)
+    assert first['status']=='RequestFailed' and 'client' not in first
+    assert any(p['node']==2000 for p in store.snapshot()), 'new intent was not stored'
+    repeat = http_get(2000, unknown_public)
+    assert repeat['status']=='RequestFailed' and 'client' not in repeat
+    assert status()['state']=='repairing', 'HTTP probes escaped repair window'
+    http_results.append(dict(phase=phase[0], discovery=discovery['status'],
+        known=known['status'], unknown=first['status'], storedUnapplied=repeat['status']))
 backbone_history = []
 backbone_members = {}
 def backbone_snapshot(state):
@@ -143,6 +186,7 @@ try:
         phase[0] = 'repair'+str(cycle+1)
         owner._last_apply -= 31
         runner.delay = 3
+        runner.during_delay = repair_http_probe
         start = time.monotonic(); apply(); durations.append(time.monotonic()-start)
         time.sleep(.1)
         rows = [h for h in history if h['phase']==phase[0]]
@@ -153,6 +197,7 @@ try:
         assert sum(h['phase']==phase[0] and h['state']=='repairing' for h in backbone_history)>=10, 'insufficient real backbone repair samples'
         assert not failures, failures
         options(True)
+    assert len(http_results)==2, 'both repairs require real HTTP admission probes'
     assert sum(durations)/2 < 10, 'maintenance exceeded bound'
     assert len(calls)==first_ready_calls, 'maintenance changed announcement'
     phase[0] = 'invalidate'; owner.invalidate()
@@ -188,7 +233,7 @@ try:
         backboneSnapshotCount=len(backbone_history),
         backboneByteTotalsFirst=backbone_history[0]['totals'],
         backboneByteTotalsLast=backbone_history[-1]['totals'],
-        backboneBytesMonotonic=True,
+        backboneBytesMonotonic=True, repairHTTPResults=http_results,
         announcementCalls=calls, scope='real RuntimeOwner, kernel WG/IPIP, bmxd and AnnouncementController; no fake provider',
         otherHealthInputs='controlled true; not full exit probe',
         isolation='network none; no mounts/devices; cap-drop ALL + eight caps')))
@@ -200,6 +245,7 @@ except Exception as error:
 finally:
     stop.set()
     if thread.ident: thread.join(timeout=3)
+    http_server.shutdown(); http_server.server_close(); http_thread.join(timeout=3)
     daemon.terminate()
     try: daemon.wait(timeout=3)
     except subprocess.TimeoutExpired: daemon.kill(); daemon.wait()
@@ -209,7 +255,7 @@ finally:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--image', default='ffdd-node:maintenance-review')
+    parser.add_argument('--image', default='ffdd-node:enrollment-review')
     args = parser.parse_args()
     name = 'ffdd-maintenance-' + uuid.uuid4().hex[:16]
     caps = [arg for cap in CAPS for arg in ('--cap-add', cap)]

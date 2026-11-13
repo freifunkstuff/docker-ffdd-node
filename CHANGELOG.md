@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1.5
+
+- Confirm exact previously applied WG peers throughout a healthy bounded maintenance window, without treating a new or retried pending enrollment as applied.
+- Keep confirmation authority tied to the last successful runtime snapshot; configuration changes, failures, stale leases and revocations still fail closed.
+
 ## v1.1.4
 
 - Hide the selected upstream-gateway client status on functional gateway instances; preserve it for normal nodes and keep the gateway's own health and announcement status separate.

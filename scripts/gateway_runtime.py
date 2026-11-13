@@ -134,6 +134,7 @@ class RuntimeOwner:
         self._fingerprint = None
         self._last_apply = 0.0
         self._last_success = None
+        self._confirmed_peers = {}
 
     def cmd(self, *args, **kwargs):
         return self.runner.run(*args, **kwargs)
@@ -234,6 +235,7 @@ class RuntimeOwner:
     def invalidate(self):
         self._fingerprint = None
         self._last_success = None
+        self._confirmed_peers = {}
         atomic_json(self.runtime_dir / 'runtime.json', {'peers': {}, 'state': 'retrying', 'timestamp': time.time()})
 
     def reconcile(self, node, secret, outgoing, incoming, port=5003):
@@ -257,8 +259,9 @@ class RuntimeOwner:
                 return self.refresh_status(peers)
             # A periodic repair must not withdraw an otherwise healthy service.
             # Only the same live owner with unchanged intent and intact inventory
-            # can grant a short, non-renewable maintenance lease. API peers stay
-            # empty until the entire apply succeeds, exactly as on initial setup.
+            # can grant a short, non-renewable maintenance lease. New admissions
+            # remain pending; only the exact prior-success snapshot can confirm
+            # already-applied peers while that bounded repair is in progress.
             self._fingerprint = None
             links = self.links()
             now = time.time()
@@ -269,7 +272,8 @@ class RuntimeOwner:
                 maintenance = self.inventory_usable(node, peers, links, observed)
             pending = {'peers': {}, 'state': 'repairing' if maintenance else 'applying', 'timestamp': now}
             if maintenance:
-                pending.update(last_success_at=self._last_success, repair_started_at=now)
+                pending.update(last_success_at=self._last_success, repair_started_at=now,
+                               confirmed_peers=self._confirmed_peers)
             atomic_json(self.runtime_dir / 'runtime.json', pending)
             self.ensure_base(node, secret, port, links)
             current = set(self.cmd('wg', 'show', 'tbbwg', 'peers').stdout.split())
@@ -316,6 +320,10 @@ class RuntimeOwner:
         atomic_json(self.public_path, {'timestamp': self._last_success, 'peers': len(peers), 'inbound': sum(p['inbound'] for p in peers),
                                       'incoming_connected': sum(p['inbound'] and p['state'] == 'connected' for p in status.values()),
                                      'connected': sum(p['state'] == 'connected' for p in status.values())}, 0o644)
+        # Replace only after both successful status publications. This is prior
+        # runtime confirmation, never reconstructed from enrollment/store retries.
+        self._confirmed_peers = {node: {'key': peer['key'], 'applied': True}
+                                 for node, peer in status.items()}
         return {p['key']: handshakes[p['key']] for p in peers
                 if p['inbound'] and p['key'] in handshakes}
 

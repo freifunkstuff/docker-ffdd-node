@@ -1,4 +1,4 @@
-"""Periodic repair is bounded service maintenance, never enrollment success."""
+"""Periodic repair preserves exact prior confirmations, never new enrollment."""
 import base64
 import json
 from pathlib import Path
@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import gateway_runtime as runtime
-from gateway_health import runtime_ready
+from gateway_health import runtime_ready, peer_confirmed
 try:
     from .test_gateway_runtime import FakeRunner, key
 except ImportError:
@@ -49,7 +49,7 @@ class MaintenanceTests(unittest.TestCase):
         self.apply()
         return self.records[-1]
 
-    def test_startup_and_unchanged_repairs_keep_api_pending_but_service_ready(self):
+    def test_unchanged_repairs_confirm_only_prior_applied_peers(self):
         self.apply()
         self.assertEqual(self.records[-1]['state'],'applying')
         self.assertFalse(runtime_ready(self.records[-1]))
@@ -59,6 +59,10 @@ class MaintenanceTests(unittest.TestCase):
             record = self.repair()
             self.assertEqual(record['state'],'repairing')
             self.assertEqual(record['peers'],{})
+            self.assertTrue(peer_confirmed(record,15,key(3),now=record['timestamp']+3))
+            self.assertTrue(peer_confirmed(record,51020,key(2),now=record['timestamp']+3))
+            self.assertFalse(peer_confirmed(record,16,key(4),now=record['timestamp']+3))
+            self.assertFalse(peer_confirmed(record,15,key(3),now=record['timestamp']+10))
             self.assertTrue(runtime_ready(record,now=record['timestamp']+3))
             self.assertFalse(runtime_ready(record,now=record['timestamp']+10))
 
@@ -91,11 +95,23 @@ class MaintenanceTests(unittest.TestCase):
         result=json.loads((self.root/'runtime/runtime.json').read_text())
         self.assertEqual(result['state'],'retrying');self.assertFalse(runtime_ready(result))
         self.assertIsNone(self.owner._fingerprint);self.assertIsNone(self.owner._last_success)
+        self.assertEqual(self.owner._confirmed_peers,{})
+        self.assertNotIn('confirmed_peers',result)
         self.runner.fail=None;self.apply()
         self.assertEqual(self.records[-1]['state'],'applying')
 
     def test_fresh_owner_never_reuses_persisted_positive_lease(self):
         self.apply();self.seed_inventory();self.repair()
         fresh=runtime.RuntimeOwner(self.runner,self.root/'runtime',self.env,self.root/'public.json')
+        self.assertEqual(fresh._confirmed_peers,{})
         fresh.reconcile(913,key(1),self.outgoing,self.incoming)
         self.assertEqual(self.records[-1]['state'],'applying')
+        self.assertNotIn('confirmed_peers',self.records[-1])
+
+    def test_successful_snapshot_replacement_drops_removed_peer(self):
+        self.apply();self.seed_inventory()
+        self.assertIn('15',self.owner._confirmed_peers)
+        self.incoming=[]
+        self.apply()
+        self.assertEqual(set(self.owner._confirmed_peers),{'51020'})
+        self.assertNotIn('confirmed_peers',self.records[-1])

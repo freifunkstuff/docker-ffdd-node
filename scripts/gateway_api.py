@@ -2,7 +2,8 @@
 
 Restricted mode intentionally permits exact known node/key reconnects, unlike the
 legacy CGI. Success requires reconciler confirmation, not a WireGuard handshake.
-Runtime confirmation: {"peers":{"<node>":{"key":"...","applied":true}}}.
+Ready runtime confirmation uses peers; bounded repair uses only confirmed_peers.
+Both require an exact node/key entry with applied=true from the runtime owner.
 """
 from __future__ import annotations
 import collections
@@ -14,7 +15,7 @@ import threading
 import time
 from urllib.parse import parse_qsl, urlsplit
 from gateway_store import GatewayStore, StoreError, validate_key, validate_node
-from gateway_health import fresh_ready
+from gateway_health import peer_confirmed
 
 
 def bounded_json(path, limit=1048576):
@@ -53,8 +54,7 @@ class GatewayApplication:
         while True:
             try:
                 state = bounded_json(self.runtime_file)
-                entry = state["peers"][str(peer["node"])]
-                if fresh_ready(state) and entry.get("key") == peer["publickey"] and entry.get("applied") is True:
+                if peer_confirmed(state, peer["node"], peer["publickey"]):
                     return True
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 pass
